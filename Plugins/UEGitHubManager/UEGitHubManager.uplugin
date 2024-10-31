@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "UEGitHubManager",
+	"Description": "UEGitHubManager is a plugin for Unreal Engine 5 that provides direct integration of the GitHub project scheduler and other management tools. It enables developers to create, manage and synchronize GitHub projects and tasks directly from Unreal Engine. The seamless connection saves time and supports project organization by making all relevant GitHub functions available directly in the editor.",
+	"Category": "Other",
+	"CreatedBy": "Philipp Fleischanderl",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "UEGitHubManager",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
