@@ -29,10 +29,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
 	static UGitHubAPIManager* GetInstance();
 
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void GetRepositories();
+
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	TArray<FString> GetRepositoryList();
+
 private:
 	FHttpModule* Http;
 	FString AccessToken;
 	static UGitHubAPIManager* SingletonInstance;
+	TArray<FString> RepositoryNames;
 
 	void OnAuthResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+	void OnReposResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 };

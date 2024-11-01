@@ -46,7 +46,9 @@ public class UEGitHubManager : ModuleRules
 				"LevelEditor",
 				"InteractiveToolsFramework",
 				"EditorInteractiveToolsFramework",
-				"UMG"
+				"UMG",
+                "Json",
+				"JsonUtilities"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
