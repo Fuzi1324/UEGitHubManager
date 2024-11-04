@@ -15,25 +15,23 @@ struct FRepositoryInfo
 	GENERATED_BODY()
 
 	UPROPERTY(BlueprintReadWrite)
-	FString RepoName;
+	FString RepositoryName;
 
 	UPROPERTY(BlueprintReadWrite)
 	FString Owner;
-};
 
-USTRUCT(BlueprintType)
-struct FSelectedRepositoryInfo
-{
-	GENERATED_BODY()
+	// Blueprint-kompatible Felder für optionale Daten
+	UPROPERTY(BlueprintReadWrite)
+	FString Description;
 
-	UPROPERTY(BlueprintReadOnly)
-	FString RepoName;
+	UPROPERTY(BlueprintReadWrite)
+	FString CreatedAt;
 
-	UPROPERTY(BlueprintReadOnly)
-	FString RepoDescription;
+	UPROPERTY(BlueprintReadWrite)
+	int32 Stars = 0;
 
-	UPROPERTY(BlueprintReadOnly)
-	FString RepoCreatedAt;
+	UPROPERTY(BlueprintReadWrite)
+	int32 Forks = 0;
 };
 
 UCLASS(Blueprintable)
@@ -44,11 +42,11 @@ class BAC_API UGitHubAPIManager : public UObject
 public:
 	UGitHubAPIManager();
 
-	UFUNCTION(BlueprintCallable, Category="GitHub API")
-	void Authenticate(const FString& AuthToken);
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void SetAccessToken(const FString& AuthToken);
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
-	void StartGitHubIntegration(const FString& UserAccessToken);
+	void InitializeIntegration(const FString& UserAccessToken);
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
 	static UGitHubAPIManager* GetInstance();
@@ -57,21 +55,24 @@ public:
 	TArray<FRepositoryInfo> GetRepositoryList();
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
-	FSelectedRepositoryInfo GetSelectedRepositoryInfo();
+	void FetchRepositoryDetails(const FString& RepositoryName);
 
-	UFUNCTION(BlueprintCallable, Category="GitHub API")
-	void GetRepositoryDetails(const FString& Owner, const FString& RepoName);
-
-	UFUNCTION(BlueprintCallable, Category="GitHub API")
-	void ShowSelectedRepo(const FString& RepoName);
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	FRepositoryInfo GetActiveRepositoryInfo();
 
 private:
 	FHttpModule* Http;
 	FString AccessToken;
 	static UGitHubAPIManager* SingletonInstance;
-	TArray<FRepositoryInfo> RepositoryInfos;
-	FSelectedRepositoryInfo SelectedRepositoryInfo;
+	TMap<FString, FRepositoryInfo> RepositoryInfos;
+	FRepositoryInfo ActiveRepository;
 
-	void OnReposResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
-	void OnRepoDetailsResponseReceived(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+	void LogHttpError(FHttpResponsePtr Response) const;
+	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> CreateHttpRequest(const FString& URL, const FString& Verb);
+
+	void HandleRepoListResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+	void HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+
+	FString GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);
+	TOptional<int32> GetIntegerFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);
 };
