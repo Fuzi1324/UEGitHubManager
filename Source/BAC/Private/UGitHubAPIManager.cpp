@@ -89,6 +89,10 @@ void UGitHubAPIManager::HandleRepoListResponse(FHttpRequestPtr Request, FHttpRes
 
                 RepositoryInfos.Add(RepoName, RepoInfo);
             }
+
+            TArray<FRepositoryInfo> Values;
+            RepositoryInfos.GenerateValueArray(Values);
+            OnRepositoriesLoaded.Broadcast(Values);
         }
     }
     else

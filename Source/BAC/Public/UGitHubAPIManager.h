@@ -34,6 +34,8 @@ struct FRepositoryInfo
 	int32 Forks = 0;
 };
 
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoriesLoaded, const TArray<FRepositoryInfo>&, Repositories);
+
 UCLASS(Blueprintable)
 class BAC_API UGitHubAPIManager : public UObject
 {
@@ -59,6 +61,10 @@ public:
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
 	FRepositoryInfo GetActiveRepositoryInfo();
+
+
+	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
+	FOnRepositoriesLoaded OnRepositoriesLoaded;
 
 private:
 	FHttpModule* Http;
