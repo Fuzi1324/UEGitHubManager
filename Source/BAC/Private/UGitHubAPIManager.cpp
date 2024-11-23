@@ -92,7 +92,11 @@ void UGitHubAPIManager::HandleRepoListResponse(FHttpRequestPtr Request, FHttpRes
 
             TArray<FRepositoryInfo> Values;
             RepositoryInfos.GenerateValueArray(Values);
-            OnRepositoriesLoaded.Broadcast(Values);
+
+            AsyncTask(ENamedThreads::GameThread, [this, Values]()
+                {
+                    OnRepositoriesLoaded.Broadcast(Values);
+                });
         }
     }
     else
@@ -141,17 +145,22 @@ void UGitHubAPIManager::HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttp
 
             ActiveRepository.Stars = JsonObject->HasField("stargazers_count") ? JsonObject->GetIntegerField("stargazers_count") : 0;
             ActiveRepository.Forks = JsonObject->HasField("forks_count") ? JsonObject->GetIntegerField("forks_count") : 0;
+
         }
+
+        // Making a local copy of ActiveRepository
+        FRepositoryInfo RepositoryCopy = ActiveRepository;
+
+        // Capture the copy in the lambda
+        AsyncTask(ENamedThreads::GameThread, [this, RepositoryCopy]()
+            {
+                OnRepositoryDetailsLoaded.Broadcast(RepositoryCopy);
+            });
     }
     else
     {
         LogHttpError(Response);
     }
-}
-
-FRepositoryInfo UGitHubAPIManager::GetActiveRepositoryInfo()
-{
-    return ActiveRepository;
 }
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
