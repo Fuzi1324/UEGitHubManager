@@ -3,7 +3,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
-#include "Http.h" // Unreal HTTP-Modul
+#include "Http.h"
 #include "UGitHubAPIManager.generated.h"
 
 /**
@@ -13,14 +13,13 @@ USTRUCT(BlueprintType)
 struct FRepositoryInfo
 {
 	GENERATED_BODY()
-
+	
 	UPROPERTY(BlueprintReadWrite)
 	FString RepositoryName;
 
 	UPROPERTY(BlueprintReadWrite)
 	FString Owner;
 
-	// Blueprint-kompatible Felder für optionale Daten
 	UPROPERTY(BlueprintReadWrite)
 	FString Description;
 
@@ -34,8 +33,31 @@ struct FRepositoryInfo
 	int32 Forks = 0;
 };
 
+USTRUCT(BlueprintType)
+struct FProjectInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	int32 Id;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Name;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Body;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString State;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString HtmlUrl;
+}; 
+
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoriesLoaded, const TArray<FRepositoryInfo>&, Repositories);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoryDetailsLoaded, const FRepositoryInfo&, RepositoryInfo);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectCreated, const FString&, ProjectUrl);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectDetailsLoaded, const FProjectInfo&, ProjectInfo);
 
 UCLASS(Blueprintable)
 class BAC_API UGitHubAPIManager : public UObject
@@ -66,6 +88,18 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnRepositoryDetailsLoaded OnRepositoryDetailsLoaded;
 
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void CreateRepositoryProject(const FString& RepositoryName, const FString& ProjectName, const FString& ProjectBody);
+
+	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
+	FOnProjectCreated OnProjectCreated;
+
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void FetchProjectDetails(int32 ProjectId);
+
+	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
+	FOnProjectDetailsLoaded OnProjectDetailsLoaded;
+
 private:
 	FHttpModule* Http;
 	FString AccessToken;
@@ -78,6 +112,8 @@ private:
 
 	void HandleRepoListResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+	void HandleCreateProjectResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+	void HandleFetchProjectDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 
 	FString GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);
 	TOptional<int32> GetIntegerFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);

@@ -63,6 +63,12 @@ TSharedRef<IHttpRequest, ESPMode::ThreadSafe> UGitHubAPIManager::CreateHttpReque
     Request->SetVerb(Verb);
     Request->SetHeader("Authorization", "Bearer " + AccessToken);
     Request->SetHeader("User-Agent", "UEGitHubManager");
+
+    if (Verb == "POST" || Verb == "PATCH")
+    {
+        Request->SetHeader("Content-Type", "application/json");
+    }
+
     return Request;
 }
 
@@ -148,10 +154,8 @@ void UGitHubAPIManager::HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttp
 
         }
 
-        // Making a local copy of ActiveRepository
         FRepositoryInfo RepositoryCopy = ActiveRepository;
 
-        // Capture the copy in the lambda
         AsyncTask(ENamedThreads::GameThread, [this, RepositoryCopy]()
             {
                 OnRepositoryDetailsLoaded.Broadcast(RepositoryCopy);
@@ -162,6 +166,103 @@ void UGitHubAPIManager::HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttp
         LogHttpError(Response);
     }
 }
+
+void UGitHubAPIManager::CreateRepositoryProject(const FString& RepositoryName, const FString& ProjectName, const FString& ProjectBody)
+{
+    if (RepositoryInfos.Contains(RepositoryName))
+    {
+        FRepositoryInfo SelectedRepo = RepositoryInfos[RepositoryName];
+        FString URL = FString::Printf(TEXT("https://api.github.com/repos/%s/%s/projects"), *SelectedRepo.Owner, *SelectedRepo.RepositoryName);
+
+        TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = CreateHttpRequest(URL, "POST");
+
+        Request->SetHeader("Accept", "application/vnd.github.inertia-preview+json");
+
+        TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
+        JsonObject->SetStringField("name", ProjectName);
+        JsonObject->SetStringField("body", ProjectBody);
+
+        FString RequestBody;
+        TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestBody);
+        FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+
+        Request->SetContentAsString(RequestBody);
+
+        Request->OnProcessRequestComplete().BindUObject(this, &UGitHubAPIManager::HandleCreateProjectResponse);
+        Request->ProcessRequest();
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Repository %s not found!"), *RepositoryName);
+    }
+}
+
+void UGitHubAPIManager::HandleCreateProjectResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+{
+    if (bWasSuccessful && (Response->GetResponseCode() == 201 || Response->GetResponseCode() == 200))
+    {
+        TSharedPtr<FJsonObject> JsonObject;
+        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
+
+        if (FJsonSerializer::Deserialize(Reader, JsonObject))
+        {
+            FString ProjectUrl = GetStringFieldSafe(JsonObject, "html_url");
+            int32 ProjectId = JsonObject->GetIntegerField("id");
+
+            FetchProjectDetails(ProjectId);
+
+            AsyncTask(ENamedThreads::GameThread, [this, ProjectUrl]()
+                {
+                    OnProjectCreated.Broadcast(ProjectUrl);
+                });
+        }
+    }
+    else
+    {
+        LogHttpError(Response);
+    }
+}
+
+void UGitHubAPIManager::FetchProjectDetails(int32 ProjectId)
+{
+    FString URL = FString::Printf(TEXT("https://api.github.com/projects/%d"), ProjectId);
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = CreateHttpRequest(URL, "GET");
+
+    Request->SetHeader("Accept", "application/vnd.github.inertia-preview+json");
+
+    Request->OnProcessRequestComplete().BindUObject(this, &UGitHubAPIManager::HandleFetchProjectDetailsResponse);
+    Request->ProcessRequest();
+}
+
+void UGitHubAPIManager::HandleFetchProjectDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+{
+    if (bWasSuccessful && Response->GetResponseCode() == 200)
+    {
+        TSharedPtr<FJsonObject> JsonObject;
+        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
+
+        if (FJsonSerializer::Deserialize(Reader, JsonObject))
+        {
+            FProjectInfo ProjectInfo;
+            ProjectInfo.Id = JsonObject->GetIntegerField("id");
+            ProjectInfo.Name = GetStringFieldSafe(JsonObject, "name");
+            ProjectInfo.Body = GetStringFieldSafe(JsonObject, "body");
+            ProjectInfo.State = GetStringFieldSafe(JsonObject, "state");
+            ProjectInfo.HtmlUrl = GetStringFieldSafe(JsonObject, "html_url");
+
+            AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
+                {
+                    OnProjectDetailsLoaded.Broadcast(ProjectInfo);
+                });
+        }
+    }
+    else
+    {
+        LogHttpError(Response);
+    }
+}
+
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
 {
