@@ -34,29 +34,54 @@ struct FRepositoryInfo
 };
 
 USTRUCT(BlueprintType)
-struct FProjectInfo
+struct FProjectItem
 {
 	GENERATED_BODY()
 
 	UPROPERTY(BlueprintReadWrite)
-	int32 Id;
+	FString ItemId;
 
 	UPROPERTY(BlueprintReadWrite)
-	FString Name;
+	FString Title;
 
 	UPROPERTY(BlueprintReadWrite)
-	FString Body;
+	FString Url;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Type;
 
 	UPROPERTY(BlueprintReadWrite)
 	FString State;
 
 	UPROPERTY(BlueprintReadWrite)
-	FString HtmlUrl;
-}; 
+	FString CreatedAt;
+};
+
+USTRUCT(BlueprintType)
+struct FProjectInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ProjectId;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ProjectTitle;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ProjectDescription;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ProjectURL;
+
+	UPROPERTY(BlueprintReadWrite)
+	TArray<FProjectItem> Items;
+};
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoriesLoaded, const TArray<FRepositoryInfo>&, Repositories);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoryDetailsLoaded, const FRepositoryInfo&, RepositoryInfo);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectCreated, const FString&, ProjectUrl);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnUserProjectsLoaded, const TArray<FProjectInfo>&, Projects);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectDetailsLoaded, const FProjectInfo&, ProjectInfo);
 
 UCLASS(Blueprintable)
@@ -77,6 +102,9 @@ public:
 	static UGitHubAPIManager* GetInstance();
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void FetchUserRepositories();
+
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
 	TArray<FRepositoryInfo> GetRepositoryList();
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
@@ -88,14 +116,20 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnRepositoryDetailsLoaded OnRepositoryDetailsLoaded;
 
-	UFUNCTION(BlueprintCallable, Category = "GitHub API")
-	void CreateRepositoryProject(const FString& RepositoryName, const FString& ProjectName, const FString& ProjectBody);
-
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnProjectCreated OnProjectCreated;
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
-	void FetchProjectDetails(int32 ProjectId);
+	void CreateNewProject(const FString& Owner, const FString& RepositoryName, const FString& ProjectName);
+
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void FetchUserProjects();
+
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void FetchProjectDetails(const FString& ProjectName);
+
+	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
+	FOnUserProjectsLoaded OnUserProjectsLoaded;
 
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnProjectDetailsLoaded OnProjectDetailsLoaded;
@@ -105,6 +139,7 @@ private:
 	FString AccessToken;
 	static UGitHubAPIManager* SingletonInstance;
 	TMap<FString, FRepositoryInfo> RepositoryInfos;
+	TMap<FString, FProjectInfo> UserProjects;
 	FRepositoryInfo ActiveRepository;
 
 	void LogHttpError(FHttpResponsePtr Response) const;
@@ -112,8 +147,10 @@ private:
 
 	void HandleRepoListResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
-	void HandleCreateProjectResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
-	void HandleFetchProjectDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
+	void HandleFetchUserProjectsResponse(TSharedPtr<FJsonObject> ResponseObject);
+	void HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName);
+
+	void SendGraphQLQuery(const FString& Query, const TFunction<void(TSharedPtr<FJsonObject>)>& Callback);
 
 	FString GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);
 	TOptional<int32> GetIntegerFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);

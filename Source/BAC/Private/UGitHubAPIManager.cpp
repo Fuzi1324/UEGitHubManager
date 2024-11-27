@@ -38,10 +38,8 @@ void UGitHubAPIManager::SetAccessToken(const FString& AuthToken)
         UE_LOG(LogTemp, Error, TEXT("Access Token is empty. Cannot retrieve repositories."));
         return;
     }
-
-    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = CreateHttpRequest("https://api.github.com/user/repos", "GET");
-    Request->OnProcessRequestComplete().BindUObject(this, &UGitHubAPIManager::HandleRepoListResponse);
-    Request->ProcessRequest();
+    
+    UE_LOG(LogTemp, Log, TEXT("Access Token has been set."));
 }
 
 void UGitHubAPIManager::LogHttpError(FHttpResponsePtr Response) const
@@ -70,6 +68,19 @@ TSharedRef<IHttpRequest, ESPMode::ThreadSafe> UGitHubAPIManager::CreateHttpReque
     }
 
     return Request;
+}
+
+void UGitHubAPIManager::FetchUserRepositories()
+{
+    if (AccessToken.IsEmpty())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Access Token is empty. Cannot retrieve repositories."));
+        return;
+    }
+
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = CreateHttpRequest("https://api.github.com/user/repos", "GET");
+    Request->OnProcessRequestComplete().BindUObject(this, &UGitHubAPIManager::HandleRepoListResponse);
+    Request->ProcessRequest();
 }
 
 void UGitHubAPIManager::HandleRepoListResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
@@ -167,100 +178,297 @@ void UGitHubAPIManager::HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttp
     }
 }
 
-void UGitHubAPIManager::CreateRepositoryProject(const FString& RepositoryName, const FString& ProjectName, const FString& ProjectBody)
+void UGitHubAPIManager::SendGraphQLQuery(const FString& Query, const TFunction<void(TSharedPtr<FJsonObject>)>& Callback)
 {
-    if (RepositoryInfos.Contains(RepositoryName))
-    {
-        FRepositoryInfo SelectedRepo = RepositoryInfos[RepositoryName];
-        FString URL = FString::Printf(TEXT("https://api.github.com/repos/%s/%s/projects"), *SelectedRepo.Owner, *SelectedRepo.RepositoryName);
+    FString URL = "https://api.github.com/graphql";
 
-        TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = CreateHttpRequest(URL, "POST");
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = Http->CreateRequest();
+    Request->SetURL(URL);
+    Request->SetVerb("POST");
+    Request->SetHeader("Authorization", "Bearer " + AccessToken);
+    Request->SetHeader("User-Agent", "UEGitHubManager");
+    Request->SetHeader("Content-Type", "application/json");
 
-        Request->SetHeader("Accept", "application/vnd.github.inertia-preview+json");
+    TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
+    JsonObject->SetStringField("query", Query);
 
-        TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
-        JsonObject->SetStringField("name", ProjectName);
-        JsonObject->SetStringField("body", ProjectBody);
+    FString RequestBody;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestBody);
+    FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
 
-        FString RequestBody;
-        TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestBody);
-        FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+    Request->SetContentAsString(RequestBody);
 
-        Request->SetContentAsString(RequestBody);
-
-        Request->OnProcessRequestComplete().BindUObject(this, &UGitHubAPIManager::HandleCreateProjectResponse);
-        Request->ProcessRequest();
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("Repository %s not found!"), *RepositoryName);
-    }
-}
-
-void UGitHubAPIManager::HandleCreateProjectResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
-{
-    if (bWasSuccessful && (Response->GetResponseCode() == 201 || Response->GetResponseCode() == 200))
-    {
-        TSharedPtr<FJsonObject> JsonObject;
-        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
-
-        if (FJsonSerializer::Deserialize(Reader, JsonObject))
+    Request->OnProcessRequestComplete().BindLambda([this, Callback](FHttpRequestPtr RequestPtr, FHttpResponsePtr ResponsePtr, bool bWasSuccessful)
         {
-            FString ProjectUrl = GetStringFieldSafe(JsonObject, "html_url");
-            int32 ProjectId = JsonObject->GetIntegerField("id");
+            if (bWasSuccessful && ResponsePtr->GetResponseCode() == 200)
+            {
+                TSharedPtr<FJsonObject> ResponseObject;
+                TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponsePtr->GetContentAsString());
 
-            FetchProjectDetails(ProjectId);
-
-            AsyncTask(ENamedThreads::GameThread, [this, ProjectUrl]()
+                if (FJsonSerializer::Deserialize(Reader, ResponseObject))
                 {
-                    OnProjectCreated.Broadcast(ProjectUrl);
-                });
-        }
-    }
-    else
-    {
-        LogHttpError(Response);
-    }
-}
+                    if (ResponseObject->HasField("errors"))
+                    {
+                        const TArray<TSharedPtr<FJsonValue>>& Errors = ResponseObject->GetArrayField("errors");
+                        for (const TSharedPtr<FJsonValue>& ErrorValue : Errors)
+                        {
+                            TSharedPtr<FJsonObject> ErrorObject = ErrorValue->AsObject();
+                            FString Message = ErrorObject->GetStringField("message");
+                            UE_LOG(LogTemp, Error, TEXT("GraphQL Fehler: %s"), *Message);
+                        }
+                        return;
+                    }
 
-void UGitHubAPIManager::FetchProjectDetails(int32 ProjectId)
-{
-    FString URL = FString::Printf(TEXT("https://api.github.com/projects/%d"), ProjectId);
+                    Callback(ResponseObject);
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Fehler beim Deserialisieren der JSON-Antwort."));
+                }
+            }
+            else
+            {
+                LogHttpError(ResponsePtr);
+            }
+        });
 
-    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = CreateHttpRequest(URL, "GET");
-
-    Request->SetHeader("Accept", "application/vnd.github.inertia-preview+json");
-
-    Request->OnProcessRequestComplete().BindUObject(this, &UGitHubAPIManager::HandleFetchProjectDetailsResponse);
     Request->ProcessRequest();
 }
 
-void UGitHubAPIManager::HandleFetchProjectDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful)
+void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& RepositoryName, const FString& ProjectName)
 {
-    if (bWasSuccessful && Response->GetResponseCode() == 200)
-    {
-        TSharedPtr<FJsonObject> JsonObject;
-        TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Response->GetContentAsString());
+    FString Query = FString::Printf(
+        TEXT("query { repository(owner:\"%s\", name:\"%s\") { owner { id } } }"),
+        *Owner, *RepositoryName);
 
-        if (FJsonSerializer::Deserialize(Reader, JsonObject))
+    SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
         {
-            FProjectInfo ProjectInfo;
-            ProjectInfo.Id = JsonObject->GetIntegerField("id");
-            ProjectInfo.Name = GetStringFieldSafe(JsonObject, "name");
-            ProjectInfo.Body = GetStringFieldSafe(JsonObject, "body");
-            ProjectInfo.State = GetStringFieldSafe(JsonObject, "state");
-            ProjectInfo.HtmlUrl = GetStringFieldSafe(JsonObject, "html_url");
+            if (!ResponseObject.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+                return;
+            }
 
-            AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
+            TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
+            if (!DataObject.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
+                return;
+            }
+
+            TSharedPtr<FJsonObject> RepositoryObject = DataObject->GetObjectField("repository");
+            if (!RepositoryObject.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Repository nicht gefunden."));
+                return;
+            }
+
+            TSharedPtr<FJsonObject> OwnerObject = RepositoryObject->GetObjectField("owner");
+            if (!OwnerObject.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Eigentümer nicht gefunden."));
+                return;
+            }
+
+            FString OwnerId = OwnerObject->GetStringField("id");
+
+            FString Mutation = FString::Printf(
+                TEXT("mutation { createProjectV2(input: {title: \"%s\", ownerId: \"%s\"}) { projectV2 { id title url } } }"),
+                *ProjectName, *OwnerId);
+
+            SendGraphQLQuery(Mutation, [this](TSharedPtr<FJsonObject> MutationResponse)
                 {
-                    OnProjectDetailsLoaded.Broadcast(ProjectInfo);
+                    if (!MutationResponse.IsValid())
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+                        return;
+                    }
+
+                    TSharedPtr<FJsonObject> DataObject = MutationResponse->GetObjectField("data");
+                    if (!DataObject.IsValid())
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
+                        return;
+                    }
+
+                    TSharedPtr<FJsonObject> CreateProjectV2Object = DataObject->GetObjectField("createProjectV2");
+                    if (!CreateProjectV2Object.IsValid())
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("Fehler beim Erstellen des Projekts."));
+                        return;
+                    }
+
+                    TSharedPtr<FJsonObject> ProjectData = CreateProjectV2Object->GetObjectField("projectV2");
+                    if (!ProjectData.IsValid())
+                    {
+                        UE_LOG(LogTemp, Error, TEXT("Projektdaten nicht gefunden."));
+                        return;
+                    }
+
+                    FString ProjectId = ProjectData->GetStringField("id");
+                    FString ProjectTitle = ProjectData->GetStringField("title");
+                    FString ProjectUrl = ProjectData->GetStringField("url");
+
+                    AsyncTask(ENamedThreads::GameThread, [this, ProjectUrl]()
+                        {
+                            OnProjectCreated.Broadcast(ProjectUrl);
+                        });
                 });
+        });
+}
+
+void UGitHubAPIManager::FetchUserProjects()
+{
+    FString Query = TEXT("query { viewer { projectsV2(first: 100) { nodes { id title url } } } }");
+
+    SendGraphQLQuery(Query, [this](TSharedPtr<FJsonObject> ResponseObject)
+        {
+            HandleFetchUserProjectsResponse(ResponseObject);
+        });
+}
+
+void UGitHubAPIManager::HandleFetchUserProjectsResponse(TSharedPtr<FJsonObject> ResponseObject)
+{
+    if (!ResponseObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+        return;
+    }
+
+    TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
+    if (!DataObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
+        return;
+    }
+
+    TSharedPtr<FJsonObject> ViewerObject = DataObject->GetObjectField("viewer");
+    if (!ViewerObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Viewer-Daten nicht gefunden."));
+        return;
+    }
+
+    TSharedPtr<FJsonObject> ProjectsObject = ViewerObject->GetObjectField("projectsV2");
+    if (!ProjectsObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("ProjectsV2-Daten nicht gefunden."));
+        return;
+    }
+
+    const TArray<TSharedPtr<FJsonValue>>* ProjectsArray;
+    if (ProjectsObject->TryGetArrayField("nodes", ProjectsArray))
+    {
+        TArray<FProjectInfo> ProjectsList;
+        UserProjects.Empty();
+
+        for (const TSharedPtr<FJsonValue>& ProjectValue : *ProjectsArray)
+        {
+            TSharedPtr<FJsonObject> ProjectObject = ProjectValue->AsObject();
+
+            FProjectInfo ProjectInfo;
+            ProjectInfo.ProjectId = GetStringFieldSafe(ProjectObject, "id");
+            ProjectInfo.ProjectTitle = GetStringFieldSafe(ProjectObject, "title");
+            ProjectInfo.ProjectURL = GetStringFieldSafe(ProjectObject, "url");
+
+            ProjectsList.Add(ProjectInfo);
+            UserProjects.Add(ProjectInfo.ProjectTitle, ProjectInfo);
         }
+
+        AsyncTask(ENamedThreads::GameThread, [this, ProjectsList]()
+            {
+                OnUserProjectsLoaded.Broadcast(ProjectsList);
+            });
     }
     else
     {
-        LogHttpError(Response);
+        UE_LOG(LogTemp, Error, TEXT("Keine Projekte gefunden."));
     }
+}
+
+void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
+{
+    if (!UserProjects.Contains(ProjectName))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Projekt mit dem Namen '%s' nicht gefunden."), *ProjectName);
+        return;
+    }
+
+    FString ProjectId = UserProjects[ProjectName].ProjectId;
+
+    FString Query = FString::Printf(
+        TEXT("query { node(id: \"%s\") { ... on ProjectV2 { id title url items(first: 100) { nodes { id content { __typename ... on Issue { id title url state createdAt } ... on PullRequest { id title url state createdAt } } } } } } }"),
+        *ProjectId);
+    
+    UE_LOG(LogTemp, Log, TEXT("%s"), *Query);
+
+    SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
+        {
+            HandleFetchProjectDetailsResponse(ResponseObject, ProjectName);
+        });
+}
+
+void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName)
+{
+    if (!ResponseObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+        return;
+    }
+
+    TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
+    if (!DataObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
+        return;
+    }
+
+    TSharedPtr<FJsonObject> NodeObject = DataObject->GetObjectField("node");
+    if (!NodeObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Projektknoten nicht gefunden."));
+        return;
+    }
+
+    FProjectInfo ProjectInfo;
+    ProjectInfo.ProjectId = GetStringFieldSafe(NodeObject, "id");
+    ProjectInfo.ProjectTitle = GetStringFieldSafe(NodeObject, "title");
+    ProjectInfo.ProjectURL = GetStringFieldSafe(NodeObject, "url");
+
+    TSharedPtr<FJsonObject> ItemsObject = NodeObject->GetObjectField("items");
+    if (ItemsObject.IsValid())
+    {
+        const TArray<TSharedPtr<FJsonValue>>* ItemsArray;
+        if (ItemsObject->TryGetArrayField("nodes", ItemsArray))
+        {
+            for (const TSharedPtr<FJsonValue>& ItemValue : *ItemsArray)
+            {
+                TSharedPtr<FJsonObject> ItemObject = ItemValue->AsObject();
+                FProjectItem ProjectItem;
+
+                ProjectItem.ItemId = GetStringFieldSafe(ItemObject, "id");
+
+                TSharedPtr<FJsonObject> ContentObject = ItemObject->GetObjectField("content");
+                if (ContentObject.IsValid())
+                {
+                    FString TypeName = GetStringFieldSafe(ContentObject, "__typename");
+                    ProjectItem.Type = TypeName;
+
+                    ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                    ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
+                    ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                    ProjectItem.State = GetStringFieldSafe(ContentObject, "state");
+
+                    ProjectInfo.Items.Add(ProjectItem);
+                }
+            }
+        }
+    }
+
+    AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
+        {
+            OnProjectDetailsLoaded.Broadcast(ProjectInfo);
+        });
 }
 
 
