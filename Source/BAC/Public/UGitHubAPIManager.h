@@ -48,13 +48,16 @@ struct FProjectItem
 	FString Url;
 
 	UPROPERTY(BlueprintReadWrite)
-	FString Type;
+	FString Type; // "Issue", "PullRequest", "DraftIssue"
 
 	UPROPERTY(BlueprintReadWrite)
-	FString State;
+	FString State; // "OPEN", "CLOSED", "MERGED", "DRAFT", etc.
 
 	UPROPERTY(BlueprintReadWrite)
 	FString CreatedAt;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Body;
 };
 
 USTRUCT(BlueprintType)

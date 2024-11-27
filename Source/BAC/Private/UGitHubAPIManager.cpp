@@ -396,17 +396,55 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
 
     FString ProjectId = UserProjects[ProjectName].ProjectId;
 
+    // Korrekte Formatierung der Query mit erforderlichen Leerzeichen und ohne überflüssige Leerzeichen um die Doppelpunkte
     FString Query = FString::Printf(
-        TEXT("query { node(id: \"%s\") { ... on ProjectV2 { id title url items(first: 100) { nodes { id content { __typename ... on Issue { id title url state createdAt } ... on PullRequest { id title url state createdAt } } } } } } }"),
+        TEXT("query { "
+            "node(id: \"%s\") { "
+            "... on ProjectV2 { "
+            "id "
+            "title "
+            "url "
+            "items(first: 100) { "
+            "nodes { "
+            "id "
+            "content { "
+            "__typename "
+            "... on Issue { "
+            "id "
+            "title "
+            "url "
+            "issueState:state "
+            "createdAt "
+            "} "
+            "... on PullRequest { "
+            "id "
+            "title "
+            "url "
+            "pullRequestState:state "
+            "createdAt "
+            "} "
+            "... on DraftIssue { "
+            "id "
+            "title "
+            "body "
+            "createdAt "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "}"),
         *ProjectId);
-    
-    UE_LOG(LogTemp, Log, TEXT("%s"), *Query);
+
+    UE_LOG(LogTemp, Log, TEXT("GraphQL Query: %s"), *Query);
 
     SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
         {
             HandleFetchProjectDetailsResponse(ResponseObject, ProjectName);
         });
 }
+
 
 void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName)
 {
@@ -444,25 +482,71 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
             for (const TSharedPtr<FJsonValue>& ItemValue : *ItemsArray)
             {
                 TSharedPtr<FJsonObject> ItemObject = ItemValue->AsObject();
-                FProjectItem ProjectItem;
+                if (!ItemObject.IsValid())
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("Ungültiges Item-Objekt."));
+                    continue;
+                }
 
+                FProjectItem ProjectItem;
                 ProjectItem.ItemId = GetStringFieldSafe(ItemObject, "id");
 
-                TSharedPtr<FJsonObject> ContentObject = ItemObject->GetObjectField("content");
-                if (ContentObject.IsValid())
+                if (ItemObject->HasTypedField<EJson::Object>("content"))
                 {
-                    FString TypeName = GetStringFieldSafe(ContentObject, "__typename");
-                    ProjectItem.Type = TypeName;
+                    TSharedPtr<FJsonObject> ContentObject = ItemObject->GetObjectField("content");
+                    if (ContentObject.IsValid())
+                    {
+                        FString TypeName = GetStringFieldSafe(ContentObject, "__typename");
+                        ProjectItem.Type = TypeName;
 
-                    ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
-                    ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
-                    ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
-                    ProjectItem.State = GetStringFieldSafe(ContentObject, "state");
+                        if (TypeName == "Issue")
+                        {
+                            ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                            ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
+                            ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                            ProjectItem.State = GetStringFieldSafe(ContentObject, "issueState");
+                        }
+                        else if (TypeName == "PullRequest")
+                        {
+                            ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                            ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
+                            ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                            ProjectItem.State = GetStringFieldSafe(ContentObject, "pullRequestState");
+                        }
+                        else if (TypeName == "DraftIssue")
+                        {
+                            ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                            ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                            ProjectItem.State = "DRAFT";
+                            ProjectItem.Url = "";
+                        }
+                        else
+                        {
+                            UE_LOG(LogTemp, Warning, TEXT("Unhandled content type: %s"), *TypeName);
+                            continue;
+                        }
 
-                    ProjectInfo.Items.Add(ProjectItem);
+                        ProjectInfo.Items.Add(ProjectItem);
+                    }
+                    else
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("ContentObject ist ungültig für Item mit ID: %s"), *ProjectItem.ItemId);
+                    }
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("Item mit ID %s hat kein 'content'-Feld."), *ProjectItem.ItemId);
                 }
             }
         }
+        else
+        {
+            UE_LOG(LogTemp, Error, TEXT("Fehler beim Abrufen des Items-Arrays."));
+        }
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Items-Objekt ist ungültig."));
     }
 
     AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
@@ -470,6 +554,8 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
             OnProjectDetailsLoaded.Broadcast(ProjectInfo);
         });
 }
+
+
 
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
