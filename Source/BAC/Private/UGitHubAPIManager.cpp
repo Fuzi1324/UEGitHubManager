@@ -555,8 +555,103 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
         });
 }
 
+void UGitHubAPIManager::FetchProjectColumns(const FString& ProjectName)
+{
+    if (!UserProjects.Contains(ProjectName))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Projekt mit dem Namen '%s' nicht gefunden."), *ProjectName);
+        return;
+    }
 
+    FString ProjectId = UserProjects[ProjectName].ProjectId;
 
+    FString Query = FString::Printf(
+        TEXT("query { "
+            "node(id: \"%s\") { "
+            "... on ProjectV2 { "
+            "fields(first: 100) { "
+            "nodes { "
+            "__typename "
+            "... on ProjectV2SingleSelectField { "
+            "id "
+            "name "
+            "options { "
+            "id "
+            "name "
+            "color "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "}"),
+        *ProjectId);
+
+    UE_LOG(LogTemp, Log, TEXT("GraphQL Query for fetching project columns: %s"), *Query);
+
+    SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
+        {
+            HandleFetchProjectColumnsResponse(ResponseObject, ProjectName);
+        });
+}
+
+void UGitHubAPIManager::HandleFetchProjectColumnsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName)
+{
+    if (!ResponseObject.IsValid())
+    {
+        UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server beim Abrufen der Projektspalten."));
+        return;
+    }
+
+    TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
+    TSharedPtr<FJsonObject> NodeObject = DataObject->GetObjectField("node");
+    TSharedPtr<FJsonObject> ProjectObject = NodeObject->GetObjectField("fields");
+
+    const TArray<TSharedPtr<FJsonValue>>* FieldsArray;
+    if (ProjectObject->TryGetArrayField("nodes", FieldsArray))
+    {
+        TArray<FProjectColumn> Columns;
+
+        for (const TSharedPtr<FJsonValue>& FieldValue : *FieldsArray)
+        {
+            TSharedPtr<FJsonObject> FieldObject = FieldValue->AsObject();
+            FString TypeName = GetStringFieldSafe(FieldObject, "__typename");
+
+            if (TypeName == "ProjectV2SingleSelectField")
+            {
+                FString FieldName = GetStringFieldSafe(FieldObject, "name");
+                if (FieldName == "Status")
+                {
+                    const TArray<TSharedPtr<FJsonValue>>* OptionsArray;
+                    if (FieldObject->TryGetArrayField("options", OptionsArray))
+                    {
+                        for (const TSharedPtr<FJsonValue>& OptionValue : *OptionsArray)
+                        {
+                            TSharedPtr<FJsonObject> OptionObject = OptionValue->AsObject();
+
+                            FProjectColumn Column;
+                            Column.ColumnId = GetStringFieldSafe(OptionObject, "id");
+                            Column.ColumnName = GetStringFieldSafe(OptionObject, "name");
+                            Column.Color = GetStringFieldSafe(OptionObject, "color");
+
+                            Columns.Add(Column);
+                        }
+                    }
+                }
+            }
+        }
+
+        AsyncTask(ENamedThreads::GameThread, [this, ProjectName, Columns]()
+            {
+                OnProjectColumnsLoaded.Broadcast(ProjectName, Columns);
+            });
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Keine Felder gefunden im Projekt."));
+    }
+}
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
 {

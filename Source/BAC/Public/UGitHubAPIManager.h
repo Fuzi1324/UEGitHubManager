@@ -34,6 +34,21 @@ struct FRepositoryInfo
 };
 
 USTRUCT(BlueprintType)
+struct FProjectColumn
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ColumnId;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ColumnName;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Color;
+};
+
+USTRUCT(BlueprintType)
 struct FProjectItem
 {
 	GENERATED_BODY()
@@ -86,6 +101,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoryDetailsLoaded, const FR
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectCreated, const FString&, ProjectUrl);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnUserProjectsLoaded, const TArray<FProjectInfo>&, Projects);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectDetailsLoaded, const FProjectInfo&, ProjectInfo);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnProjectColumnsLoaded, const FString&, ProjectName, const TArray<FProjectColumn>&, Columns);
 
 UCLASS(Blueprintable)
 class BAC_API UGitHubAPIManager : public UObject
@@ -137,6 +153,12 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnProjectDetailsLoaded OnProjectDetailsLoaded;
 
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void FetchProjectColumns(const FString& ProjectName);
+
+	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
+	FOnProjectColumnsLoaded OnProjectColumnsLoaded;
+
 private:
 	FHttpModule* Http;
 	FString AccessToken;
@@ -152,6 +174,7 @@ private:
 	void HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void HandleFetchUserProjectsResponse(TSharedPtr<FJsonObject> ResponseObject);
 	void HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName);
+	void HandleFetchProjectColumnsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName);
 
 	void SendGraphQLQuery(const FString& Query, const TFunction<void(TSharedPtr<FJsonObject>)>& Callback);
 
