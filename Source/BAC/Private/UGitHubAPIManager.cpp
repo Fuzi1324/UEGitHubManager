@@ -414,6 +414,10 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "color "
             "} "
             "} "
+            "... on ProjectV2Field { "
+            "id "
+            "name "
+            "} "
             "} "
             "} "
             "items(first: 100) { "
@@ -425,6 +429,14 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "name "
             "field { "
             "... on ProjectV2SingleSelectField { "
+            "name "
+            "} "
+            "} "
+            "} "
+            "... on ProjectV2ItemFieldDateValue { "
+            "date "
+            "field { "
+            "... on ProjectV2Field { "
             "name "
             "} "
             "} "
@@ -459,7 +471,8 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "} "
             "} "
             "}"),
-        *ProjectId);
+        *ProjectId
+    );
 
     SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
         {
@@ -496,105 +509,138 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
     ProjectInfo.ProjectURL = GetStringFieldSafe(NodeObject, "url");
 
     TSharedPtr<FJsonObject> ItemsObject = NodeObject->GetObjectField("items");
-    if (ItemsObject.IsValid())
+    if (!ItemsObject.IsValid())
     {
-        const TArray<TSharedPtr<FJsonValue>>* ItemsArray;
-        if (ItemsObject->TryGetArrayField("nodes", ItemsArray))
-        {
-            for (const TSharedPtr<FJsonValue>& ItemValue : *ItemsArray)
+        UE_LOG(LogTemp, Error, TEXT("Items-Objekt ist ungültig."));
+        AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
             {
-                TSharedPtr<FJsonObject> ItemObject = ItemValue->AsObject();
-                if (!ItemObject.IsValid())
-                {
-                    UE_LOG(LogTemp, Warning, TEXT("Ungültiges Item-Objekt."));
-                    continue;
-                }
+                OnProjectDetailsLoaded.Broadcast(ProjectInfo);
+            });
+        return;
+    }
 
-                FProjectItem ProjectItem;
-                ProjectItem.ItemId = GetStringFieldSafe(ItemObject, "id");
+    const TArray<TSharedPtr<FJsonValue>>* ItemsArray;
+    if (!ItemsObject->TryGetArrayField("nodes", ItemsArray))
+    {
+        UE_LOG(LogTemp, Error, TEXT("Fehler beim Abrufen des Items-Arrays."));
+        AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
+            {
+                OnProjectDetailsLoaded.Broadcast(ProjectInfo);
+            });
+        return;
+    }
 
-                if (ItemObject->HasTypedField<EJson::Object>("fieldValues"))
+    for (const TSharedPtr<FJsonValue>& ItemValue : *ItemsArray)
+    {
+        TSharedPtr<FJsonObject> ItemObject = ItemValue->AsObject();
+        if (!ItemObject.IsValid())
+        {
+            UE_LOG(LogTemp, Warning, TEXT("Ungültiges Item-Objekt."));
+            continue;
+        }
+
+        FProjectItem ProjectItem;
+        ProjectItem.ItemId = GetStringFieldSafe(ItemObject, "id");
+
+        if (ItemObject->HasTypedField<EJson::Object>("fieldValues"))
+        {
+            TSharedPtr<FJsonObject> FieldValuesObject = ItemObject->GetObjectField("fieldValues");
+            const TArray<TSharedPtr<FJsonValue>>* FieldValuesNodes;
+            if (FieldValuesObject->TryGetArrayField("nodes", FieldValuesNodes))
+            {
+                for (const TSharedPtr<FJsonValue>& FieldValue : *FieldValuesNodes)
                 {
-                    TSharedPtr<FJsonObject> FieldValuesObject = ItemObject->GetObjectField("fieldValues");
-                    const TArray<TSharedPtr<FJsonValue>>* FieldValuesNodes;
-                    if (FieldValuesObject->TryGetArrayField("nodes", FieldValuesNodes))
+                    TSharedPtr<FJsonObject> FieldValueObject = FieldValue->AsObject();
+                    if (!FieldValueObject.IsValid())
                     {
-                        for (const TSharedPtr<FJsonValue>& FieldValue : *FieldValuesNodes)
+                        continue;
+                    }
+
+                    if (FieldValueObject->HasField("name") && FieldValueObject->HasField("field"))
+                    {
+                        FString Name = GetStringFieldSafe(FieldValueObject, "name");
+                        TSharedPtr<FJsonObject> FieldObject = FieldValueObject->GetObjectField("field");
+                        if (FieldObject.IsValid())
                         {
-                            TSharedPtr<FJsonObject> FieldValueObject = FieldValue->AsObject();
-                            if (FieldValueObject.IsValid())
+                            FString FieldName = GetStringFieldSafe(FieldObject, "name");
+                            if (FieldName == "Status")
                             {
-                                FString Name = GetStringFieldSafe(FieldValueObject, "name");
-                                TSharedPtr<FJsonObject> FieldObject = FieldValueObject->GetObjectField("field");
-                                if (FieldObject.IsValid())
-                                {
-                                    FString FieldName = GetStringFieldSafe(FieldObject, "name");
-                                    if (FieldName == "Status")
-                                    {
-                                        ProjectItem.ColumnName = Name;
-                                    }
-                                }
+                                ProjectItem.ColumnName = Name;
+                                ProjectItem.ColumnId = GetStringFieldSafe(FieldValueObject, "id");
+                            }
+                        }
+                    }
+
+                    if (FieldValueObject->HasField("date") && FieldValueObject->HasField("field"))
+                    {
+                        FString DateValue = GetStringFieldSafe(FieldValueObject, "date");
+                        TSharedPtr<FJsonObject> FieldObject = FieldValueObject->GetObjectField("field");
+                        if (FieldObject.IsValid())
+                        {
+                            FString FieldName = GetStringFieldSafe(FieldObject, "name");
+                            if (FieldName == "StartDate")
+                            {
+                                ProjectItem.StartDate = DateValue;
+                            }
+                            else if (FieldName == "EndDate")
+                            {
+                                ProjectItem.EndDate = DateValue;
                             }
                         }
                     }
                 }
+            }
+        }
 
-                if (ItemObject->HasTypedField<EJson::Object>("content"))
+        if (ItemObject->HasTypedField<EJson::Object>("content"))
+        {
+            TSharedPtr<FJsonObject> ContentObject = ItemObject->GetObjectField("content");
+            if (ContentObject.IsValid())
+            {
+                FString TypeName = GetStringFieldSafe(ContentObject, "__typename");
+                ProjectItem.Type = TypeName;
+
+                if (TypeName == "Issue")
                 {
-                    TSharedPtr<FJsonObject> ContentObject = ItemObject->GetObjectField("content");
-                    if (ContentObject.IsValid())
-                    {
-                        FString TypeName = GetStringFieldSafe(ContentObject, "__typename");
-                        ProjectItem.Type = TypeName;
-
-                        if (TypeName == "Issue")
-                        {
-                            ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
-                            ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
-                            ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
-                            ProjectItem.State = GetStringFieldSafe(ContentObject, "issueState");
-                        }
-                        else if (TypeName == "PullRequest")
-                        {
-                            ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
-                            ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
-                            ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
-                            ProjectItem.State = GetStringFieldSafe(ContentObject, "pullRequestState");
-                        }
-                        else if (TypeName == "DraftIssue")
-                        {
-                            ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
-                            ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
-                            ProjectItem.State = "DRAFT";
-                            ProjectItem.Url = "";
-                        }
-                        else
-                        {
-                            UE_LOG(LogTemp, Warning, TEXT("Unhandled content type: %s"), *TypeName);
-                            continue;
-                        }
-
-                        ProjectInfo.Items.Add(ProjectItem);
-                    }
-                    else
-                    {
-                        UE_LOG(LogTemp, Warning, TEXT("ContentObject ist ungültig für Item mit ID: %s"), *ProjectItem.ItemId);
-                    }
+                    ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                    ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
+                    ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                    ProjectItem.State = GetStringFieldSafe(ContentObject, "issueState");
+                    ProjectItem.Body = GetStringFieldSafe(ContentObject, "body");
+                }
+                else if (TypeName == "PullRequest")
+                {
+                    ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                    ProjectItem.Url = GetStringFieldSafe(ContentObject, "url");
+                    ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                    ProjectItem.State = GetStringFieldSafe(ContentObject, "pullRequestState");
+                    ProjectItem.Body = GetStringFieldSafe(ContentObject, "body");
+                }
+                else if (TypeName == "DraftIssue")
+                {
+                    ProjectItem.Title = GetStringFieldSafe(ContentObject, "title");
+                    ProjectItem.CreatedAt = GetStringFieldSafe(ContentObject, "createdAt");
+                    ProjectItem.Body = GetStringFieldSafe(ContentObject, "body");
+                    ProjectItem.State = "DRAFT";
+                    ProjectItem.Url = "";
                 }
                 else
                 {
-                    UE_LOG(LogTemp, Warning, TEXT("Item mit ID %s hat kein 'content'-Feld."), *ProjectItem.ItemId);
+                    UE_LOG(LogTemp, Warning, TEXT("Unhandled content type: %s"), *TypeName);
+                    continue;
                 }
+
+                ProjectInfo.Items.Add(ProjectItem);
+            }
+            else
+            {
+                UE_LOG(LogTemp, Warning, TEXT("ContentObject ist ungültig für Item mit ID: %s"), *ProjectItem.ItemId);
             }
         }
         else
         {
-            UE_LOG(LogTemp, Error, TEXT("Fehler beim Abrufen des Items-Arrays."));
+            UE_LOG(LogTemp, Warning, TEXT("Item mit ID %s hat kein 'content'-Feld."), *ProjectItem.ItemId);
         }
-    }
-    else
-    {
-        UE_LOG(LogTemp, Error, TEXT("Items-Objekt ist ungültig."));
     }
 
     AsyncTask(ENamedThreads::GameThread, [this, ProjectInfo]()
@@ -602,6 +648,8 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
             OnProjectDetailsLoaded.Broadcast(ProjectInfo);
         });
 }
+
+
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
 {
