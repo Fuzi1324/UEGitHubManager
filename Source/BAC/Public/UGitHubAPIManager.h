@@ -36,40 +36,33 @@ struct FRepositoryInfo
 USTRUCT(BlueprintType)
 struct FProjectItem
 {
-	GENERATED_BODY()
-
-	UPROPERTY(BlueprintReadWrite)
-	FString ItemId;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString Title;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString Url;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString Type;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString State;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString CreatedAt;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString Body;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString ColumnId;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString ColumnName;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString StartDate;
-
-	UPROPERTY(BlueprintReadWrite)
-	FString EndDate;
+    GENERATED_BODY()
+    UPROPERTY(BlueprintReadWrite)
+    FString ItemId;
+    UPROPERTY(BlueprintReadWrite)
+    FString Title;
+    UPROPERTY(BlueprintReadWrite)
+    FString Url;
+    UPROPERTY(BlueprintReadWrite)
+    FString Type;
+    UPROPERTY(BlueprintReadWrite)
+    FString State;
+    UPROPERTY(BlueprintReadWrite)
+    FString CreatedAt;
+    UPROPERTY(BlueprintReadWrite)
+    FString Body;
+    UPROPERTY(BlueprintReadWrite)
+    FString ColumnId;
+    UPROPERTY(BlueprintReadWrite)
+    FString ColumnName;
+    UPROPERTY(BlueprintReadWrite)
+    FString StartDate;
+    UPROPERTY(BlueprintReadWrite)
+    FString EndDate;
+    UPROPERTY(BlueprintReadWrite)
+    FString StartDateFieldId;
+    UPROPERTY(BlueprintReadWrite)
+    FString EndDateFieldId;
 };
 
 USTRUCT(BlueprintType)
@@ -98,6 +91,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnRepositoryDetailsLoaded, const FR
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectCreated, const FString&, ProjectUrl);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnUserProjectsLoaded, const TArray<FProjectInfo>&, Projects);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnProjectDetailsLoaded, const FProjectInfo&, ProjectInfo);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FOnMutationCompleted, bool, bSuccess);
 
 UCLASS(Blueprintable)
 class BAC_API UGitHubAPIManager : public UObject
@@ -149,6 +143,12 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnProjectDetailsLoaded OnProjectDetailsLoaded;
 
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void UpdateProjectItemDateValue(const FString& ProjectId, const FString& ItemId, const FString& FieldId, const FString& NewDateValue);
+
+	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
+	FOnMutationCompleted OnMutationCompleted;
+
 private:
 	FHttpModule* Http;
 	FString AccessToken;
@@ -160,12 +160,15 @@ private:
 	void LogHttpError(FHttpResponsePtr Response) const;
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> CreateHttpRequest(const FString& URL, const FString& Verb);
 
+	// ResponseHandler
 	void HandleRepoListResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void HandleRepoDetailsResponse(FHttpRequestPtr Request, FHttpResponsePtr Response, bool bWasSuccessful);
 	void HandleFetchUserProjectsResponse(TSharedPtr<FJsonObject> ResponseObject);
 	void HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName);
 
+	// GraphQL
 	void SendGraphQLQuery(const FString& Query, const TFunction<void(TSharedPtr<FJsonObject>)>& Callback);
+	void SendGraphQLMutation(const FString& Mutation, const TFunction<void(TSharedPtr<FJsonObject>)>& Callback);
 
 	FString GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);
 	TOptional<int32> GetIntegerFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName);

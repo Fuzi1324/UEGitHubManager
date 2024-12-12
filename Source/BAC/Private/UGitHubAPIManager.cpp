@@ -235,6 +235,63 @@ void UGitHubAPIManager::SendGraphQLQuery(const FString& Query, const TFunction<v
     Request->ProcessRequest();
 }
 
+void UGitHubAPIManager::SendGraphQLMutation(const FString& Mutation, const TFunction<void(TSharedPtr<FJsonObject>)>& Callback)
+{
+    FString URL = "https://api.github.com/graphql";
+    TSharedRef<IHttpRequest, ESPMode::ThreadSafe> Request = Http->CreateRequest();
+    Request->SetURL(URL);
+    Request->SetVerb("POST");
+    Request->SetHeader("Authorization", "Bearer " + AccessToken);
+    Request->SetHeader("User-Agent", "UEGitHubManager");
+    Request->SetHeader("Content-Type", "application/json");
+
+    TSharedPtr<FJsonObject> JsonObject = MakeShareable(new FJsonObject);
+    JsonObject->SetStringField("query", Mutation);
+
+    FString RequestBody;
+    TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&RequestBody);
+    FJsonSerializer::Serialize(JsonObject.ToSharedRef(), Writer);
+    Request->SetContentAsString(RequestBody);
+
+    Request->OnProcessRequestComplete().BindLambda([this, Callback](FHttpRequestPtr RequestPtr, FHttpResponsePtr ResponsePtr, bool bWasSuccessful)
+        {
+            if (bWasSuccessful && ResponsePtr->GetResponseCode() == 200)
+            {
+                TSharedPtr<FJsonObject> ResponseObject;
+                TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponsePtr->GetContentAsString());
+                if (FJsonSerializer::Deserialize(Reader, ResponseObject))
+                {
+                    if (ResponseObject->HasField("errors"))
+                    {
+                        const TArray<TSharedPtr<FJsonValue>>& Errors = ResponseObject->GetArrayField("errors");
+                        for (const TSharedPtr<FJsonValue>& ErrorValue : Errors)
+                        {
+                            TSharedPtr<FJsonObject> ErrorObject = ErrorValue->AsObject();
+                            FString Message = ErrorObject->GetStringField("message");
+                            UE_LOG(LogTemp, Error, TEXT("GraphQL Fehler: %s"), *Message);
+                        }
+                        AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
+                        return;
+                    }
+                    Callback(ResponseObject);
+                }
+                else
+                {
+                    UE_LOG(LogTemp, Error, TEXT("Fehler beim Deserialisieren der JSON-Antwort."));
+                    AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
+                }
+            }
+            else
+            {
+                LogHttpError(ResponsePtr);
+                AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
+            }
+        });
+
+    Request->ProcessRequest();
+}
+
+
 void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& RepositoryName, const FString& ProjectName)
 {
     FString Query = FString::Printf(
@@ -256,62 +313,31 @@ void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& Re
                 return;
             }
 
-            TSharedPtr<FJsonObject> RepositoryObject = DataObject->GetObjectField("repository");
-            if (!RepositoryObject.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Repository nicht gefunden."));
-                return;
-            }
-
-            TSharedPtr<FJsonObject> OwnerObject = RepositoryObject->GetObjectField("owner");
-            if (!OwnerObject.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Eigentümer nicht gefunden."));
-                return;
-            }
-
-            FString OwnerId = OwnerObject->GetStringField("id");
+            FString OwnerId = DataObject->GetObjectField("repository")->GetObjectField("owner")->GetStringField("id");
 
             FString Mutation = FString::Printf(
                 TEXT("mutation { createProjectV2(input: {title: \"%s\", ownerId: \"%s\"}) { projectV2 { id title url } } }"),
                 *ProjectName, *OwnerId);
 
-            SendGraphQLQuery(Mutation, [this](TSharedPtr<FJsonObject> MutationResponse)
+            SendGraphQLMutation(Mutation, [this](TSharedPtr<FJsonObject> MutationResponse)
                 {
                     if (!MutationResponse.IsValid())
                     {
                         UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+                        AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
                         return;
                     }
 
-                    TSharedPtr<FJsonObject> DataObject = MutationResponse->GetObjectField("data");
-                    if (!DataObject.IsValid())
-                    {
-                        UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
-                        return;
-                    }
+                    TSharedPtr<FJsonObject> ProjectData = MutationResponse->GetObjectField("data")
+                        ->GetObjectField("createProjectV2")
+                        ->GetObjectField("projectV2");
 
-                    TSharedPtr<FJsonObject> CreateProjectV2Object = DataObject->GetObjectField("createProjectV2");
-                    if (!CreateProjectV2Object.IsValid())
-                    {
-                        UE_LOG(LogTemp, Error, TEXT("Fehler beim Erstellen des Projekts."));
-                        return;
-                    }
-
-                    TSharedPtr<FJsonObject> ProjectData = CreateProjectV2Object->GetObjectField("projectV2");
-                    if (!ProjectData.IsValid())
-                    {
-                        UE_LOG(LogTemp, Error, TEXT("Projektdaten nicht gefunden."));
-                        return;
-                    }
-
-                    FString ProjectId = ProjectData->GetStringField("id");
-                    FString ProjectTitle = ProjectData->GetStringField("title");
                     FString ProjectUrl = ProjectData->GetStringField("url");
 
                     AsyncTask(ENamedThreads::GameThread, [this, ProjectUrl]()
                         {
                             OnProjectCreated.Broadcast(ProjectUrl);
+                            OnMutationCompleted.Broadcast(true);
                         });
                 });
         });
@@ -426,6 +452,7 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "fieldValues(first: 8) { "
             "nodes { "
             "... on ProjectV2ItemFieldSingleSelectValue { "
+            "id "
             "name "
             "field { "
             "... on ProjectV2SingleSelectField { "
@@ -434,9 +461,11 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "} "
             "} "
             "... on ProjectV2ItemFieldDateValue { "
+            "id "
             "date "
             "field { "
             "... on ProjectV2Field { "
+            "id "
             "name "
             "} "
             "} "
@@ -451,6 +480,7 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "url "
             "issueState:state "
             "createdAt "
+            "body "
             "} "
             "... on PullRequest { "
             "id "
@@ -458,6 +488,7 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             "url "
             "pullRequestState:state "
             "createdAt "
+            "body "
             "} "
             "... on DraftIssue { "
             "id "
@@ -479,7 +510,6 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
             HandleFetchProjectDetailsResponse(ResponseObject, ProjectName);
         });
 }
-
 
 void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName)
 {
@@ -556,6 +586,8 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                         continue;
                     }
 
+                    FString FieldValueId = GetStringFieldSafe(FieldValueObject, "id");
+
                     if (FieldValueObject->HasField("name") && FieldValueObject->HasField("field"))
                     {
                         FString Name = GetStringFieldSafe(FieldValueObject, "name");
@@ -566,7 +598,7 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                             if (FieldName == "Status")
                             {
                                 ProjectItem.ColumnName = Name;
-                                ProjectItem.ColumnId = GetStringFieldSafe(FieldValueObject, "id");
+                                ProjectItem.ColumnId = FieldValueId;
                             }
                         }
                     }
@@ -578,13 +610,17 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                         if (FieldObject.IsValid())
                         {
                             FString FieldName = GetStringFieldSafe(FieldObject, "name");
+                            FString FieldId = GetStringFieldSafe(FieldObject, "id");
+
                             if (FieldName == "StartDate")
                             {
                                 ProjectItem.StartDate = DateValue;
+                                ProjectItem.StartDateFieldId = FieldId;
                             }
                             else if (FieldName == "EndDate")
                             {
                                 ProjectItem.EndDate = DateValue;
+                                ProjectItem.EndDateFieldId = FieldId;
                             }
                         }
                     }
@@ -650,6 +686,73 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
 }
 
 
+void UGitHubAPIManager::UpdateProjectItemDateValue(const FString& ProjectId, const FString& ItemId, const FString& FieldId, const FString& NewDateValue)
+{
+    FString FormattedDate = NewDateValue;
+    if (!NewDateValue.Contains("T"))
+    {
+        FormattedDate = FString::Printf(TEXT("%sT00:00:00.000Z"), *NewDateValue);
+    }
+
+    FString Mutation = FString::Printf(
+        TEXT("mutation { "
+            "updateProjectV2ItemFieldValue( "
+            "input: { "
+            "projectId: \"%s\" "
+            "itemId: \"%s\" "
+            "fieldId: \"%s\" "
+            "value: { "
+            "date: \"%s\" "
+            "} "
+            "} "
+            ") { "
+            "projectV2Item { "
+            "id "
+            "fieldValues(first: 8) { "
+            "nodes { "
+            "... on ProjectV2ItemFieldDateValue { "
+            "date "
+            "field { "
+            "... on ProjectV2Field { "
+            "name "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "} "
+            "}"),
+        *ProjectId, *ItemId, *FieldId, *FormattedDate);
+
+    UE_LOG(LogTemp, Log, TEXT("Sending mutation: %s"), *Mutation);
+
+    SendGraphQLMutation(Mutation, [this](TSharedPtr<FJsonObject> ResponseObject)
+        {
+            if (!ResponseObject.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+                return;
+            }
+
+            TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
+            if (!DataObject.IsValid())
+            {
+                UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
+                return;
+            }
+
+            FString ResponseString;
+            TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResponseString);
+            FJsonSerializer::Serialize(ResponseObject.ToSharedRef(), Writer);
+            UE_LOG(LogTemp, Log, TEXT("Response received: %s"), *ResponseString);
+
+            AsyncTask(ENamedThreads::GameThread, [this]()
+                {
+                    OnMutationCompleted.Broadcast(true);
+                });
+        });
+}
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
 {
