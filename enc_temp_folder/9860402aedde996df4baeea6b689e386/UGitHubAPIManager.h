@@ -82,9 +82,6 @@ struct FProjectInfo
 	UPROPERTY(BlueprintReadWrite)
 	FString ProjectURL;
 
-	UPROPERTY(BlueprintReadOnly)
-	FString ColumnFieldId;
-
 	UPROPERTY(BlueprintReadWrite)
 	TArray<FProjectItem> Items;
 };
@@ -161,7 +158,7 @@ public:
 	FOnMutationCompleted OnMutationCompleted;
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
-	void CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& FieldId, const FString& ColumnId);
+	void CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& ColumnId);
 
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnItemCreated OnItemCreated;

@@ -792,7 +792,7 @@ void UGitHubAPIManager::UpdateProjectItemDateValue(const FString& ProjectId, con
         });
 }
 
-void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& FieldId, const FString& ColumnId)
+void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& ColumnId)
 {
     if (AccessToken.IsEmpty() || ProjectId.IsEmpty())
     {
@@ -800,8 +800,7 @@ void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FStrin
         return;
     }
 
-    // Zunächst: Item erstellen (Draft Issue)
-    FString Mutation = FString::Printf(TEXT(
+    FString CreateMutation = FString::Printf(TEXT(
         "mutation {"
         "  addProjectV2DraftIssue(input: {"
         "    projectId: \"%s\""
@@ -815,13 +814,14 @@ void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FStrin
 
     UE_LOG(LogTemp, Log, TEXT("Creating new project item with title: %s"), *Title);
 
-    SendGraphQLMutation(Mutation, [this, ProjectId, FieldId, ColumnId](TSharedPtr<FJsonObject> ResponseObject)
+    SendGraphQLMutation(CreateMutation, [this, ProjectId, ColumnId](TSharedPtr<FJsonObject> ResponseObject)
         {
             if (!ResponseObject.IsValid())
             {
                 UE_LOG(LogTemp, Error, TEXT("Invalid response from server."));
                 return;
             }
+
             TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
             if (!DataObject.IsValid())
             {
@@ -830,57 +830,49 @@ void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FStrin
             }
 
             TSharedPtr<FJsonObject> CreateObject = DataObject->GetObjectField("addProjectV2DraftIssue");
-            if (!CreateObject.IsValid())
+            if (CreateObject.IsValid())
+            {
+                TSharedPtr<FJsonObject> ProjectItem = CreateObject->GetObjectField("projectItem");
+                FString ItemId = ProjectItem->GetStringField("id");
+
+                FString UpdateMutation = FString::Printf(TEXT(
+                    "mutation {"
+                    "  updateProjectV2ItemFieldValue(input: {"
+                    "    projectId: \"%s\""
+                    "    itemId: \"%s\""
+                    "    fieldId: \"%s\""
+                    "    value: {"
+                    "      singleSelectOptionId: \"%s\""
+                    "    }"
+                    "  }) {"
+                    "    projectV2Item {"
+                    "      id"
+                    "    }"
+                    "  }"
+                    "}"), *ProjectId, *ItemId, TEXT("Status"), *ColumnId);
+
+                SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
+                    {
+                        AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
+                            {
+                                OnItemCreated.Broadcast();
+                                for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
+                                {
+                                    if (Pair.Value.ProjectId == ProjectId)
+                                    {
+                                        FetchProjectDetails(Pair.Value.ProjectTitle);
+                                        break;
+                                    }
+                                }
+                            });
+                    });
+            }
+            else
             {
                 UE_LOG(LogTemp, Error, TEXT("Failed to create project item."));
-                return;
             }
-
-            TSharedPtr<FJsonObject> ProjectItem = CreateObject->GetObjectField("projectItem");
-            if (!ProjectItem.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Project item not found in response."));
-                return;
-            }
-
-            FString ItemId = ProjectItem->GetStringField("id");
-
-            // Nun das Single-Select-Feld (Spalte) über updateProjectV2ItemFieldValue setzen
-            // Hier ist ColumnId die singleSelectOptionId der gewünschten Spalte
-            FString UpdateMutation = FString::Printf(TEXT(
-                "mutation {"
-                "  updateProjectV2ItemFieldValue("
-                "    input: {"
-                "      projectId: \"%s\""
-                "      itemId: \"%s\""
-                "      fieldId: \"%s\""
-                "      value: { singleSelectOptionId: \"%s\" }"
-                "    }"
-                "  ) {"
-                "    projectV2Item {"
-                "      id"
-                "    }"
-                "  }"
-                "}"), *ProjectId, *ItemId, *FieldId, *ColumnId);
-
-            SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
-                {
-                    AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
-                        {
-                            OnItemCreated.Broadcast();
-                            for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
-                            {
-                                if (Pair.Value.ProjectId == ProjectId)
-                                {
-                                    FetchProjectDetails(Pair.Value.ProjectTitle);
-                                    break;
-                                }
-                            }
-                        });
-                });
         });
 }
-
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
 {
