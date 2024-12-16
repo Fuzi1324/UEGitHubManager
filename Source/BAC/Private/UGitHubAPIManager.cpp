@@ -463,97 +463,97 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
 
     FString ProjectId = UserProjects[ProjectName].ProjectId;
 
-    FString Query = FString::Printf(
-        TEXT("query { "
-            "node(id: \"%s\") { "
-            "... on ProjectV2 { "
-            "id "
-            "title "
-            "url "
-            "fields(first: 20) { "
-            "nodes { "
-            "... on ProjectV2Field { "
-            "id "
-            "name "
-            "dataType "
-            "} "
-            "... on ProjectV2SingleSelectField { "
-            "id "
-            "name "
-            "options { "
-            "id "
-            "name "
-            "} "
-            "} "
-            "} "
-            "} "
-            "items(first: 100) { "
-            "nodes { "
-            "id "
-            "fieldValues(first: 8) { "
-            "nodes { "
-            "... on ProjectV2ItemFieldDateValue { "
-            "id "
-            "date "
-            "field { "
-            "... on ProjectV2Field { "
-            "id "
-            "name "
-            "dataType "
-            "} "
-            "} "
-            "} "
-            "... on ProjectV2ItemFieldSingleSelectValue { "
-            "name "
-            "field { "
-            "... on ProjectV2SingleSelectField { "
-            "id "
-            "name "
-            "} "
-            "} "
-            "} "
-            "} "
-            "} "
-            "content { "
-            "__typename "
-            "... on Issue { "
-            "id "
-            "title "
-            "url "
-            "issueState:state "
-            "createdAt "
-            "body "
-            "} "
-            "... on PullRequest { "
-            "id "
-            "title "
-            "url "
-            "pullRequestState:state "
-            "createdAt "
-            "body "
-            "} "
-            "... on DraftIssue { "
-            "id "
-            "title "
-            "body "
-            "createdAt "
-            "} "
-            "} "
-            "} "
-            "} "
-            "} "
-            "} "
-            "}"),
-        *ProjectId
-    );
-
-    UE_LOG(LogTemp, Log, TEXT("Sending project details query for project: %s"), *ProjectName);
+    FString Query = FString::Printf(TEXT(
+        "query { "
+        "  node(id: \"%s\") { "
+        "    ... on ProjectV2 { "
+        "      id "
+        "      title "
+        "      url "
+        "      fields(first: 20) { "
+        "        nodes { "
+        "          ... on ProjectV2Field { "
+        "            id "
+        "            name "
+        "            dataType "
+        "          } "
+        "          ... on ProjectV2SingleSelectField { "
+        "            id "
+        "            name "
+        "            options { "
+        "              id "
+        "              name "
+        "            } "
+        "          } "
+        "        } "
+        "      } "
+        "      items(first: 100) { "
+        "        nodes { "
+        "          id "
+        "          fieldValues(first: 8) { "
+        "            nodes { "
+        "              ... on ProjectV2ItemFieldDateValue { "
+        "                id "
+        "                date "
+        "                field { "
+        "                  ... on ProjectV2Field { "
+        "                    id "
+        "                    name "
+        "                    dataType "
+        "                  } "
+        "                } "
+        "              } "
+        "              ... on ProjectV2ItemFieldSingleSelectValue { "
+        "                id "
+        "                name "
+        "                optionId "
+        "                field { "
+        "                  ... on ProjectV2SingleSelectField { "
+        "                    id "
+        "                    name "
+        "                  } "
+        "                } "
+        "              } "
+        "            } "
+        "          } "
+        "          content { "
+        "            __typename "
+        "            ... on Issue { "
+        "              id "
+        "              title "
+        "              url "
+        "              issueState: state "
+        "              createdAt "
+        "              body "
+        "            } "
+        "            ... on PullRequest { "
+        "              id "
+        "              title "
+        "              url "
+        "              pullRequestState: state "
+        "              createdAt "
+        "              body "
+        "            } "
+        "            ... on DraftIssue { "
+        "              id "
+        "              title "
+        "              body "
+        "              createdAt "
+        "            } "
+        "          } "
+        "        } "
+        "      } "
+        "    } "
+        "  } "
+        "}"), *ProjectId);
 
     SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
         {
             HandleFetchProjectDetailsResponse(ResponseObject, ProjectName);
         });
 }
+
+
 
 void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName)
 {
@@ -615,8 +615,6 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
         FProjectItem ProjectItem;
         ProjectItem.ItemId = GetStringFieldSafe(ItemObject, "id");
 
-        UE_LOG(LogTemp, Log, TEXT("Processing item: %s"), *ProjectItem.ItemId);
-
         if (ItemObject->HasTypedField<EJson::Object>("fieldValues"))
         {
             TSharedPtr<FJsonObject> FieldValuesObject = ItemObject->GetObjectField("fieldValues");
@@ -643,7 +641,13 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                             if (FieldName == "Status")
                             {
                                 ProjectItem.ColumnName = Name;
-                                ProjectItem.ColumnId = FieldId;
+                                FString OptionId = GetStringFieldSafe(FieldValueObject, "optionId");
+                                ProjectItem.ColumnId = OptionId;
+
+                                if (ProjectInfo.ColumnFieldId.IsEmpty())
+                                {
+                                    ProjectInfo.ColumnFieldId = FieldId;
+                                }
                             }
                         }
                     }
@@ -661,15 +665,11 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                             {
                                 ProjectItem.StartDate = DateValue;
                                 ProjectItem.StartDateFieldId = FieldId;
-                                UE_LOG(LogTemp, Log, TEXT("Found StartDate for item %s - Value: %s, FieldId: %s"),
-                                    *ProjectItem.ItemId, *DateValue, *FieldId);
                             }
                             else if (FieldName == "EndDate")
                             {
                                 ProjectItem.EndDate = DateValue;
                                 ProjectItem.EndDateFieldId = FieldId;
-                                UE_LOG(LogTemp, Log, TEXT("Found EndDate for item %s - Value: %s, FieldId: %s"),
-                                    *ProjectItem.ItemId, *DateValue, *FieldId);
                             }
                         }
                     }
@@ -709,8 +709,6 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                     ProjectItem.State = "DRAFT";
                     ProjectItem.Url = "";
                 }
-
-                //UE_LOG(LogTemp, Log, TEXT("Processed item: Title='%s', Type=%s"), *ProjectItem.Title, *ProjectItem.Type);
             }
         }
 
@@ -800,7 +798,6 @@ void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FStrin
         return;
     }
 
-    // Zunächst: Item erstellen (Draft Issue)
     FString Mutation = FString::Printf(TEXT(
         "mutation {"
         "  addProjectV2DraftIssue(input: {"
@@ -845,8 +842,6 @@ void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FStrin
 
             FString ItemId = ProjectItem->GetStringField("id");
 
-            // Nun das Single-Select-Feld (Spalte) über updateProjectV2ItemFieldValue setzen
-            // Hier ist ColumnId die singleSelectOptionId der gewünschten Spalte
             FString UpdateMutation = FString::Printf(TEXT(
                 "mutation {"
                 "  updateProjectV2ItemFieldValue("
