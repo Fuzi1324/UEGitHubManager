@@ -582,35 +582,6 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
     ProjectInfo.ProjectTitle = GetStringFieldSafe(NodeObject, "title");
     ProjectInfo.ProjectURL = GetStringFieldSafe(NodeObject, "url");
 
-    // Get field IDs first
-    FString startDateFieldId;
-    FString endDateFieldId;
-
-    if (TSharedPtr<FJsonObject> FieldsObject = NodeObject->GetObjectField("fields"))
-    {
-        const TArray<TSharedPtr<FJsonValue>>* FieldNodes;
-        if (FieldsObject->TryGetArrayField("nodes", FieldNodes))
-        {
-            for (const TSharedPtr<FJsonValue>& FieldValue : *FieldNodes)
-            {
-                TSharedPtr<FJsonObject> FieldObject = FieldValue->AsObject();
-                if (!FieldObject.IsValid()) continue;
-
-                FString FieldName = GetStringFieldSafe(FieldObject, "name");
-                FString FieldId = GetStringFieldSafe(FieldObject, "id");
-
-                if (FieldName == "StartDate")
-                {
-                    startDateFieldId = FieldId;
-                }
-                else if (FieldName == "EndDate")
-                {
-                    endDateFieldId = FieldId;
-                }
-            }
-        }
-    }
-
     TSharedPtr<FJsonObject> ItemsObject = NodeObject->GetObjectField("items");
     if (!ItemsObject.IsValid())
     {
@@ -643,9 +614,6 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
 
         FProjectItem ProjectItem;
         ProjectItem.ItemId = GetStringFieldSafe(ItemObject, "id");
-        // Set field IDs regardless of whether dates exist
-        ProjectItem.StartDateFieldId = startDateFieldId;
-        ProjectItem.EndDateFieldId = endDateFieldId;
 
         if (ItemObject->HasTypedField<EJson::Object>("fieldValues"))
         {
@@ -691,14 +659,17 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                         if (FieldObject.IsValid())
                         {
                             FString FieldName = GetStringFieldSafe(FieldObject, "name");
+                            FString FieldId = GetStringFieldSafe(FieldObject, "id");
 
                             if (FieldName == "StartDate")
                             {
                                 ProjectItem.StartDate = DateValue;
+                                ProjectItem.StartDateFieldId = FieldId;
                             }
                             else if (FieldName == "EndDate")
                             {
                                 ProjectItem.EndDate = DateValue;
+                                ProjectItem.EndDateFieldId = FieldId;
                             }
                         }
                     }
@@ -810,7 +781,7 @@ void UGitHubAPIManager::UpdateProjectItemDateValue(const FString& ProjectId, con
             FString ResponseString;
             TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResponseString);
             FJsonSerializer::Serialize(ResponseObject.ToSharedRef(), Writer);
-            //UE_LOG(LogTemp, Log, TEXT("Response received: %s"), *ResponseString);
+            UE_LOG(LogTemp, Log, TEXT("Response received: %s"), *ResponseString);
 
             AsyncTask(ENamedThreads::GameThread, [this]()
                 {
@@ -871,58 +842,39 @@ void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FStrin
 
             FString ItemId = ProjectItem->GetStringField("id");
 
-            if (!FieldId.IsEmpty() && !ColumnId.IsEmpty())
-            {
-                FString UpdateMutation = FString::Printf(TEXT(
-                    "mutation {"
-                    "  updateProjectV2ItemFieldValue("
-                    "    input: {"
-                    "      projectId: \"%s\""
-                    "      itemId: \"%s\""
-                    "      fieldId: \"%s\""
-                    "      value: { singleSelectOptionId: \"%s\" }"
-                    "    }"
-                    "  ) {"
-                    "    projectV2Item {"
-                    "      id"
-                    "    }"
-                    "  }"
-                    "}"), *ProjectId, *ItemId, *FieldId, *ColumnId);
+            FString UpdateMutation = FString::Printf(TEXT(
+                "mutation {"
+                "  updateProjectV2ItemFieldValue("
+                "    input: {"
+                "      projectId: \"%s\""
+                "      itemId: \"%s\""
+                "      fieldId: \"%s\""
+                "      value: { singleSelectOptionId: \"%s\" }"
+                "    }"
+                "  ) {"
+                "    projectV2Item {"
+                "      id"
+                "    }"
+                "  }"
+                "}"), *ProjectId, *ItemId, *FieldId, *ColumnId);
 
-                SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
-                    {
-                        AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
-                            {
-                                OnItemCreated.Broadcast();
-                                for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
-                                {
-                                    if (Pair.Value.ProjectId == ProjectId)
-                                    {
-                                        FetchProjectDetails(Pair.Value.ProjectTitle);
-                                        break;
-                                    }
-                                }
-                            });
-                    });
-            }
-            else
-            {
-                AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
-                    {
-                        OnItemCreated.Broadcast();
-                        for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
+            SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
+                {
+                    AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
                         {
-                            if (Pair.Value.ProjectId == ProjectId)
+                            OnItemCreated.Broadcast();
+                            for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
                             {
-                                FetchProjectDetails(Pair.Value.ProjectTitle);
-                                break;
+                                if (Pair.Value.ProjectId == ProjectId)
+                                {
+                                    FetchProjectDetails(Pair.Value.ProjectTitle);
+                                    break;
+                                }
                             }
-                        }
-                    });
-            }
+                        });
+                });
         });
 }
-
 
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)
