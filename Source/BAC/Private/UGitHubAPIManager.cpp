@@ -361,15 +361,68 @@ void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& Pr
                         return;
                     }
 
-                    FString ProjectUrl = MutationResponse->GetObjectField("data")
+                    FString ProjectId = MutationResponse->GetObjectField("data")
                         ->GetObjectField("createProjectV2")
                         ->GetObjectField("projectV2")
-                        ->GetStringField("url");
+                        ->GetStringField("id");
 
-                    AsyncTask(ENamedThreads::GameThread, [this, ProjectUrl]()
+                    // StartDate-Feld erstellen
+                    FString StartDateMutation = FString::Printf(TEXT(
+                        "mutation {"
+                        "  createProjectV2Field("
+                        "    input: {"
+                        "      projectId: \"%s\""
+                        "      dataType: DATE"
+                        "      name: \"StartDate\""
+                        "    }"
+                        "  ) {"
+                        "    projectV2Field {"
+                        "      ... on ProjectV2SingleSelectField {"
+                        "        id"
+                        "        name"
+                        "      }"
+                        "      ... on ProjectV2Field {"
+                        "        id"
+                        "        name"
+                        "      }"
+                        "    }"
+                        "  }"
+                        "}"), *ProjectId);
+
+                    SendGraphQLMutation(StartDateMutation, [this, ProjectId](TSharedPtr<FJsonObject> StartDateResponse)
                         {
-                            OnProjectCreated.Broadcast(ProjectUrl);
-                            OnMutationCompleted.Broadcast(true);
+                            // EndDate-Feld erstellen
+                            FString EndDateMutation = FString::Printf(TEXT(
+                                "mutation {"
+                                "  createProjectV2Field("
+                                "    input: {"
+                                "      projectId: \"%s\""
+                                "      dataType: DATE"
+                                "      name: \"EndDate\""
+                                "    }"
+                                "  ) {"
+                                "    projectV2Field {"
+                                "      ... on ProjectV2SingleSelectField {"
+                                "        id"
+                                "        name"
+                                "      }"
+                                "      ... on ProjectV2Field {"
+                                "        id"
+                                "        name"
+                                "      }"
+                                "    }"
+                                "  }"
+                                "}"), *ProjectId);
+
+                            SendGraphQLMutation(EndDateMutation, [this, ProjectId](TSharedPtr<FJsonObject> EndDateResponse)
+                                {
+                                    AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
+                                        {
+                                            OnProjectCreated.Broadcast(ProjectId);
+                                            OnMutationCompleted.Broadcast(true);
+                                            FetchUserProjects();
+                                        });
+                                });
                         });
                 });
         });
@@ -561,8 +614,6 @@ void UGitHubAPIManager::FetchProjectDetails(const FString& ProjectName)
         });
 }
 
-
-
 void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject> ResponseObject, const FString& ProjectName)
 {
     if (!ResponseObject.IsValid())
@@ -594,6 +645,7 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
     FString startDateFieldId;
     FString endDateFieldId;
 
+    // Spalten und Felder verarbeiten
     if (TSharedPtr<FJsonObject> FieldsObject = NodeObject->GetObjectField("fields"))
     {
         const TArray<TSharedPtr<FJsonValue>>* FieldNodes;
@@ -607,7 +659,25 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                 FString FieldName = GetStringFieldSafe(FieldObject, "name");
                 FString FieldId = GetStringFieldSafe(FieldObject, "id");
 
-                if (FieldName == "StartDate")
+                if (FieldName == "Status")
+                {
+                    ProjectInfo.ColumnFieldId = FieldId;
+
+                    // Status-Optionen (Spalten) extrahieren
+                    const TArray<TSharedPtr<FJsonValue>>* Options;
+                    if (FieldObject->TryGetArrayField("options", Options))
+                    {
+                        for (const TSharedPtr<FJsonValue>& OptionValue : *Options)
+                        {
+                            TSharedPtr<FJsonObject> OptionObject = OptionValue->AsObject();
+                            FColumnInfo ColumnInfo;
+                            ColumnInfo.ColumnId = GetStringFieldSafe(OptionObject, "id");
+                            ColumnInfo.ColumnName = GetStringFieldSafe(OptionObject, "name");
+                            ProjectInfo.Columns.Add(ColumnInfo);
+                        }
+                    }
+                }
+                else if (FieldName == "StartDate")
                 {
                     startDateFieldId = FieldId;
                 }
@@ -683,11 +753,6 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
                                 ProjectItem.ColumnName = Name;
                                 FString OptionId = GetStringFieldSafe(FieldValueObject, "optionId");
                                 ProjectItem.ColumnId = OptionId;
-
-                                if (ProjectInfo.ColumnFieldId.IsEmpty())
-                                {
-                                    ProjectInfo.ColumnFieldId = FieldId;
-                                }
                             }
                         }
                     }
@@ -760,118 +825,77 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
 
 void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& FieldId, const FString& ColumnId)
 {
-    FString Query = FString::Printf(TEXT(
-        "query {"
-        "  node(id: \"%s\") {"
-        "    ... on ProjectV2 {"
-        "      fields(first: 20) {"
-        "        nodes {"
-        "          ... on ProjectV2SingleSelectField {"
-        "            id"
-        "            name"
-        "            options {"
-        "              id"
-        "              name"
-        "            }"
-        "          }"
-        "        }"
-        "      }"
+    FString Mutation = FString::Printf(TEXT(
+        "mutation {"
+        "  addProjectV2DraftIssue(input: {"
+        "    projectId: \"%s\""
+        "    title: \"%s\""
+        "  }) {"
+        "    projectItem {"
+        "      id"
         "    }"
         "  }"
-        "}"), *ProjectId);
+        "}"), *ProjectId, *Title);
 
-    SendGraphQLQuery(Query, [this, ProjectId, Title](TSharedPtr<FJsonObject> ResponseObject)
+    SendGraphQLMutation(Mutation, [this, ProjectId, FieldId, ColumnId](TSharedPtr<FJsonObject> ResponseObject)
         {
             if (!ResponseObject.IsValid() || !ResponseObject->HasField("data"))
             {
-                UE_LOG(LogTemp, Error, TEXT("Invalid response while fetching status options"));
+                AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
                 return;
             }
 
-            FString StatusFieldId;
-            FString DefaultStatusId;
+            TSharedPtr<FJsonObject> CreateObject = ResponseObject->GetObjectField("data")->GetObjectField("addProjectV2DraftIssue");
+            FString ItemId = CreateObject->GetObjectField("projectItem")->GetStringField("id");
 
-            TSharedPtr<FJsonObject> NodeObj = ResponseObject->GetObjectField("data")->GetObjectField("node");
-            TSharedPtr<FJsonObject> FieldsObj = NodeObj->GetObjectField("fields");
-            TArray<TSharedPtr<FJsonValue>> FieldNodes = FieldsObj->GetArrayField("nodes");
-
-            for (const auto& FieldNode : FieldNodes)
+            if (!FieldId.IsEmpty() && !ColumnId.IsEmpty())
             {
-                TSharedPtr<FJsonObject> FieldObj = FieldNode->AsObject();
-                if (FieldObj->HasField("name") && FieldObj->GetStringField("name") == "Status")
-                {
-                    StatusFieldId = FieldObj->GetStringField("id");
-                    TArray<TSharedPtr<FJsonValue>> Options = FieldObj->GetArrayField("options");
-                    if (Options.Num() > 0)
-                    {
-                        DefaultStatusId = Options[0]->AsObject()->GetStringField("id");
-                        break;
-                    }
-                }
-            }
-
-            if (!StatusFieldId.IsEmpty() && !DefaultStatusId.IsEmpty())
-            {
-                FString Mutation = FString::Printf(TEXT(
+                FString UpdateMutation = FString::Printf(TEXT(
                     "mutation {"
-                    "  addProjectV2DraftIssue(input: {"
-                    "    projectId: \"%s\""
-                    "    title: \"%s\""
-                    "  }) {"
-                    "    projectItem {"
+                    "  updateProjectV2ItemFieldValue("
+                    "    input: {"
+                    "      projectId: \"%s\""
+                    "      itemId: \"%s\""
+                    "      fieldId: \"%s\""
+                    "      value: { singleSelectOptionId: \"%s\" }"
+                    "    }"
+                    "  ) {"
+                    "    projectV2Item {"
                     "      id"
                     "    }"
                     "  }"
-                    "}"), *ProjectId, *Title);
+                    "}"), *ProjectId, *ItemId, *FieldId, *ColumnId);
 
-                SendGraphQLMutation(Mutation, [this, ProjectId, StatusFieldId, DefaultStatusId](TSharedPtr<FJsonObject> ResponseObject)
+                SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
                     {
-                        if (!ResponseObject.IsValid() || !ResponseObject->HasField("data"))
-                        {
-                            AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
-                            return;
-                        }
-
-                        TSharedPtr<FJsonObject> CreateObject = ResponseObject->GetObjectField("data")->GetObjectField("addProjectV2DraftIssue");
-                        FString ItemId = CreateObject->GetObjectField("projectItem")->GetStringField("id");
-
-                        FString UpdateMutation = FString::Printf(TEXT(
-                            "mutation {"
-                            "  updateProjectV2ItemFieldValue("
-                            "    input: {"
-                            "      projectId: \"%s\""
-                            "      itemId: \"%s\""
-                            "      fieldId: \"%s\""
-                            "      value: { singleSelectOptionId: \"%s\" }"
-                            "    }"
-                            "  ) {"
-                            "    projectV2Item {"
-                            "      id"
-                            "    }"
-                            "  }"
-                            "}"), *ProjectId, *ItemId, *StatusFieldId, *DefaultStatusId);
-
-                        SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
+                        AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
                             {
-                                AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
+                                OnItemCreated.Broadcast();
+                                for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
+                                {
+                                    if (Pair.Value.ProjectId == ProjectId)
                                     {
-                                        OnItemCreated.Broadcast();
-                                        for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
-                                        {
-                                            if (Pair.Value.ProjectId == ProjectId)
-                                            {
-                                                FetchProjectDetails(Pair.Value.ProjectTitle);
-                                                break;
-                                            }
-                                        }
-                                    });
+                                        FetchProjectDetails(Pair.Value.ProjectTitle);
+                                        break;
+                                    }
+                                }
                             });
                     });
             }
             else
             {
-                UE_LOG(LogTemp, Error, TEXT("Could not find Status field or default status option"));
-                AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
+                AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
+                    {
+                        OnItemCreated.Broadcast();
+                        for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
+                        {
+                            if (Pair.Value.ProjectId == ProjectId)
+                            {
+                                FetchProjectDetails(Pair.Value.ProjectTitle);
+                                break;
+                            }
+                        }
+                    });
             }
         });
 }

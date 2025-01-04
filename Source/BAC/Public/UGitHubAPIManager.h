@@ -34,6 +34,18 @@ struct FRepositoryInfo
 };
 
 USTRUCT(BlueprintType)
+struct FColumnInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ColumnId;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString ColumnName;
+};
+
+USTRUCT(BlueprintType)
 struct FProjectItem
 {
     GENERATED_BODY()
@@ -84,6 +96,9 @@ struct FProjectInfo
 
 	UPROPERTY(BlueprintReadOnly)
 	FString ColumnFieldId;
+
+	UPROPERTY(BlueprintReadWrite)
+	TArray<FColumnInfo> Columns;
 
 	UPROPERTY(BlueprintReadWrite)
 	TArray<FProjectItem> Items;
