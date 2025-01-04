@@ -366,7 +366,6 @@ void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& Pr
                         ->GetObjectField("projectV2")
                         ->GetStringField("id");
 
-                    // StartDate-Feld erstellen
                     FString StartDateMutation = FString::Printf(TEXT(
                         "mutation {"
                         "  createProjectV2Field("
@@ -391,7 +390,6 @@ void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& Pr
 
                     SendGraphQLMutation(StartDateMutation, [this, ProjectId](TSharedPtr<FJsonObject> StartDateResponse)
                         {
-                            // EndDate-Feld erstellen
                             FString EndDateMutation = FString::Printf(TEXT(
                                 "mutation {"
                                 "  createProjectV2Field("
