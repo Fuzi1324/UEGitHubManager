@@ -333,28 +333,21 @@ void UGitHubAPIManager::SendGraphQLMutation(const FString& Mutation, const TFunc
 }
 
 
-void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& RepositoryName, const FString& ProjectName)
+void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& ProjectName)
 {
-    FString Query = FString::Printf(
-        TEXT("query { repository(owner:\"%s\", name:\"%s\") { owner { id } } }"),
-        *Owner, *RepositoryName);
+    FString Query = FString::Printf(TEXT("query { user(login: \"%s\") { id } }"), *Owner);
 
     SendGraphQLQuery(Query, [this, ProjectName](TSharedPtr<FJsonObject> ResponseObject)
         {
-            if (!ResponseObject.IsValid())
+            if (!ResponseObject.IsValid() || !ResponseObject->HasField("data"))
             {
-                UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+                AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
                 return;
             }
 
-            TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
-            if (!DataObject.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Fehler beim Parsen des Datenobjekts."));
-                return;
-            }
-
-            FString OwnerId = DataObject->GetObjectField("repository")->GetObjectField("owner")->GetStringField("id");
+            FString OwnerId = ResponseObject->GetObjectField("data")
+                ->GetObjectField("user")
+                ->GetStringField("id");
 
             FString Mutation = FString::Printf(
                 TEXT("mutation { createProjectV2(input: {title: \"%s\", ownerId: \"%s\"}) { projectV2 { id title url } } }"),
@@ -364,16 +357,14 @@ void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& Re
                 {
                     if (!MutationResponse.IsValid())
                     {
-                        UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
                         AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
                         return;
                     }
 
-                    TSharedPtr<FJsonObject> ProjectData = MutationResponse->GetObjectField("data")
+                    FString ProjectUrl = MutationResponse->GetObjectField("data")
                         ->GetObjectField("createProjectV2")
-                        ->GetObjectField("projectV2");
-
-                    FString ProjectUrl = ProjectData->GetStringField("url");
+                        ->GetObjectField("projectV2")
+                        ->GetStringField("url");
 
                     AsyncTask(ENamedThreads::GameThread, [this, ProjectUrl]()
                         {
@@ -386,8 +377,20 @@ void UGitHubAPIManager::CreateNewProject(const FString& Owner, const FString& Re
 
 void UGitHubAPIManager::FetchUserProjects()
 {
-    FString Query = TEXT("query { viewer { projectsV2(first: 100) { nodes { id title url } } } }");
-
+    FString Query = TEXT(R"(
+        query {
+            viewer {
+                projectsV2(first: 100) {
+                    nodes {
+                        id
+                        title
+                        url
+                        closed
+                    }
+                }
+            }
+        }
+    )");
     SendGraphQLQuery(Query, [this](TSharedPtr<FJsonObject> ResponseObject)
         {
             HandleFetchUserProjectsResponse(ResponseObject);
@@ -433,13 +436,18 @@ void UGitHubAPIManager::HandleFetchUserProjectsResponse(TSharedPtr<FJsonObject> 
         {
             TSharedPtr<FJsonObject> ProjectObject = ProjectValue->AsObject();
 
-            FProjectInfo ProjectInfo;
-            ProjectInfo.ProjectId = GetStringFieldSafe(ProjectObject, "id");
-            ProjectInfo.ProjectTitle = GetStringFieldSafe(ProjectObject, "title");
-            ProjectInfo.ProjectURL = GetStringFieldSafe(ProjectObject, "url");
+            bool bIsClosed = false;
+            ProjectObject->TryGetBoolField("closed", bIsClosed);
 
-            ProjectsList.Add(ProjectInfo);
-            UserProjects.Add(ProjectInfo.ProjectTitle, ProjectInfo);
+            if (!bIsClosed)
+            {
+                FProjectInfo ProjectInfo;
+                ProjectInfo.ProjectId = GetStringFieldSafe(ProjectObject, "id");
+                ProjectInfo.ProjectTitle = GetStringFieldSafe(ProjectObject, "title");
+                ProjectInfo.ProjectURL = GetStringFieldSafe(ProjectObject, "url");
+                ProjectsList.Add(ProjectInfo);
+                UserProjects.Add(ProjectInfo.ProjectTitle, ProjectInfo);
+            }
         }
 
         AsyncTask(ENamedThreads::GameThread, [this, ProjectsList]()
@@ -750,6 +758,123 @@ void UGitHubAPIManager::HandleFetchProjectDetailsResponse(TSharedPtr<FJsonObject
         });
 }
 
+void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& FieldId, const FString& ColumnId)
+{
+    FString Query = FString::Printf(TEXT(
+        "query {"
+        "  node(id: \"%s\") {"
+        "    ... on ProjectV2 {"
+        "      fields(first: 20) {"
+        "        nodes {"
+        "          ... on ProjectV2SingleSelectField {"
+        "            id"
+        "            name"
+        "            options {"
+        "              id"
+        "              name"
+        "            }"
+        "          }"
+        "        }"
+        "      }"
+        "    }"
+        "  }"
+        "}"), *ProjectId);
+
+    SendGraphQLQuery(Query, [this, ProjectId, Title](TSharedPtr<FJsonObject> ResponseObject)
+        {
+            if (!ResponseObject.IsValid() || !ResponseObject->HasField("data"))
+            {
+                UE_LOG(LogTemp, Error, TEXT("Invalid response while fetching status options"));
+                return;
+            }
+
+            FString StatusFieldId;
+            FString DefaultStatusId;
+
+            TSharedPtr<FJsonObject> NodeObj = ResponseObject->GetObjectField("data")->GetObjectField("node");
+            TSharedPtr<FJsonObject> FieldsObj = NodeObj->GetObjectField("fields");
+            TArray<TSharedPtr<FJsonValue>> FieldNodes = FieldsObj->GetArrayField("nodes");
+
+            for (const auto& FieldNode : FieldNodes)
+            {
+                TSharedPtr<FJsonObject> FieldObj = FieldNode->AsObject();
+                if (FieldObj->HasField("name") && FieldObj->GetStringField("name") == "Status")
+                {
+                    StatusFieldId = FieldObj->GetStringField("id");
+                    TArray<TSharedPtr<FJsonValue>> Options = FieldObj->GetArrayField("options");
+                    if (Options.Num() > 0)
+                    {
+                        DefaultStatusId = Options[0]->AsObject()->GetStringField("id");
+                        break;
+                    }
+                }
+            }
+
+            if (!StatusFieldId.IsEmpty() && !DefaultStatusId.IsEmpty())
+            {
+                FString Mutation = FString::Printf(TEXT(
+                    "mutation {"
+                    "  addProjectV2DraftIssue(input: {"
+                    "    projectId: \"%s\""
+                    "    title: \"%s\""
+                    "  }) {"
+                    "    projectItem {"
+                    "      id"
+                    "    }"
+                    "  }"
+                    "}"), *ProjectId, *Title);
+
+                SendGraphQLMutation(Mutation, [this, ProjectId, StatusFieldId, DefaultStatusId](TSharedPtr<FJsonObject> ResponseObject)
+                    {
+                        if (!ResponseObject.IsValid() || !ResponseObject->HasField("data"))
+                        {
+                            AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
+                            return;
+                        }
+
+                        TSharedPtr<FJsonObject> CreateObject = ResponseObject->GetObjectField("data")->GetObjectField("addProjectV2DraftIssue");
+                        FString ItemId = CreateObject->GetObjectField("projectItem")->GetStringField("id");
+
+                        FString UpdateMutation = FString::Printf(TEXT(
+                            "mutation {"
+                            "  updateProjectV2ItemFieldValue("
+                            "    input: {"
+                            "      projectId: \"%s\""
+                            "      itemId: \"%s\""
+                            "      fieldId: \"%s\""
+                            "      value: { singleSelectOptionId: \"%s\" }"
+                            "    }"
+                            "  ) {"
+                            "    projectV2Item {"
+                            "      id"
+                            "    }"
+                            "  }"
+                            "}"), *ProjectId, *ItemId, *StatusFieldId, *DefaultStatusId);
+
+                        SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
+                            {
+                                AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
+                                    {
+                                        OnItemCreated.Broadcast();
+                                        for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
+                                        {
+                                            if (Pair.Value.ProjectId == ProjectId)
+                                            {
+                                                FetchProjectDetails(Pair.Value.ProjectTitle);
+                                                break;
+                                            }
+                                        }
+                                    });
+                            });
+                    });
+            }
+            else
+            {
+                UE_LOG(LogTemp, Error, TEXT("Could not find Status field or default status option"));
+                AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
+            }
+        });
+}
 
 void UGitHubAPIManager::UpdateProjectItemDateValue(const FString& ProjectId, const FString& ItemId, const FString& FieldId, const FString& NewDateValue)
 {
@@ -819,110 +944,47 @@ void UGitHubAPIManager::UpdateProjectItemDateValue(const FString& ProjectId, con
         });
 }
 
-void UGitHubAPIManager::CreateProjectItem(const FString& ProjectId, const FString& Title, const FString& FieldId, const FString& ColumnId)
+void UGitHubAPIManager::MoveProjectItem(const FString& ProjectId, const FString& ItemId, const FString& NewColumnId, const FString& StatusFieldId)
 {
-    if (AccessToken.IsEmpty() || ProjectId.IsEmpty())
-    {
-        UE_LOG(LogTemp, Error, TEXT("Access Token or Project ID is empty."));
-        return;
-    }
-
     FString Mutation = FString::Printf(TEXT(
         "mutation {"
-        "  addProjectV2DraftIssue(input: {"
-        "    projectId: \"%s\""
-        "    title: \"%s\""
-        "  }) {"
-        "    projectItem {"
+        "  updateProjectV2ItemFieldValue("
+        "    input: {"
+        "      projectId: \"%s\""
+        "      itemId: \"%s\""
+        "      fieldId: \"%s\""
+        "      value: { singleSelectOptionId: \"%s\" }"
+        "    }"
+        "  ) {"
+        "    projectV2Item {"
         "      id"
         "    }"
         "  }"
-        "}"), *ProjectId, *Title);
+        "}"), *ProjectId, *ItemId, *StatusFieldId, *NewColumnId);
 
-    UE_LOG(LogTemp, Log, TEXT("Creating new project item with title: %s"), *Title);
-
-    SendGraphQLMutation(Mutation, [this, ProjectId, FieldId, ColumnId](TSharedPtr<FJsonObject> ResponseObject)
+    SendGraphQLMutation(Mutation, [this, ProjectId](TSharedPtr<FJsonObject> ResponseObject)
         {
             if (!ResponseObject.IsValid())
             {
-                UE_LOG(LogTemp, Error, TEXT("Invalid response from server."));
-                return;
-            }
-            TSharedPtr<FJsonObject> DataObject = ResponseObject->GetObjectField("data");
-            if (!DataObject.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Error parsing data object."));
+                UE_LOG(LogTemp, Error, TEXT("Ungültige Antwort vom Server."));
+                AsyncTask(ENamedThreads::GameThread, [this]() { OnMutationCompleted.Broadcast(false); });
                 return;
             }
 
-            TSharedPtr<FJsonObject> CreateObject = DataObject->GetObjectField("addProjectV2DraftIssue");
-            if (!CreateObject.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Failed to create project item."));
-                return;
-            }
-
-            TSharedPtr<FJsonObject> ProjectItem = CreateObject->GetObjectField("projectItem");
-            if (!ProjectItem.IsValid())
-            {
-                UE_LOG(LogTemp, Error, TEXT("Project item not found in response."));
-                return;
-            }
-
-            FString ItemId = ProjectItem->GetStringField("id");
-
-            if (!FieldId.IsEmpty() && !ColumnId.IsEmpty())
-            {
-                FString UpdateMutation = FString::Printf(TEXT(
-                    "mutation {"
-                    "  updateProjectV2ItemFieldValue("
-                    "    input: {"
-                    "      projectId: \"%s\""
-                    "      itemId: \"%s\""
-                    "      fieldId: \"%s\""
-                    "      value: { singleSelectOptionId: \"%s\" }"
-                    "    }"
-                    "  ) {"
-                    "    projectV2Item {"
-                    "      id"
-                    "    }"
-                    "  }"
-                    "}"), *ProjectId, *ItemId, *FieldId, *ColumnId);
-
-                SendGraphQLMutation(UpdateMutation, [this, ProjectId](TSharedPtr<FJsonObject> UpdateResponse)
+            AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
+                {
+                    OnMutationCompleted.Broadcast(true);
+                    for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
                     {
-                        AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
-                            {
-                                OnItemCreated.Broadcast();
-                                for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
-                                {
-                                    if (Pair.Value.ProjectId == ProjectId)
-                                    {
-                                        FetchProjectDetails(Pair.Value.ProjectTitle);
-                                        break;
-                                    }
-                                }
-                            });
-                    });
-            }
-            else
-            {
-                AsyncTask(ENamedThreads::GameThread, [this, ProjectId]()
-                    {
-                        OnItemCreated.Broadcast();
-                        for (const TPair<FString, FProjectInfo>& Pair : UserProjects)
+                        if (Pair.Value.ProjectId == ProjectId)
                         {
-                            if (Pair.Value.ProjectId == ProjectId)
-                            {
-                                FetchProjectDetails(Pair.Value.ProjectTitle);
-                                break;
-                            }
+                            FetchProjectDetails(Pair.Value.ProjectTitle);
+                            break;
                         }
-                    });
-            }
+                    }
+                });
         });
 }
-
 
 
 FString UGitHubAPIManager::GetStringFieldSafe(TSharedPtr<FJsonObject> JsonObject, const FString& FieldName)

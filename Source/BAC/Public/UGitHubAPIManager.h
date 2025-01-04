@@ -140,7 +140,7 @@ public:
 	FOnProjectCreated OnProjectCreated;
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
-	void CreateNewProject(const FString& Owner, const FString& RepositoryName, const FString& ProjectName);
+	void CreateNewProject(const FString& Owner, const FString& ProjectName);
 
 	UFUNCTION(BlueprintCallable, Category = "GitHub API")
 	void FetchUserProjects();
@@ -165,6 +165,9 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "GitHub API")
 	FOnItemCreated OnItemCreated;
+
+	UFUNCTION(BlueprintCallable, Category = "GitHub API")
+	void MoveProjectItem(const FString& ProjectId, const FString& ItemId, const FString& NewColumnId, const FString& StatusFieldId);
 
 private:
 	FHttpModule* Http;
