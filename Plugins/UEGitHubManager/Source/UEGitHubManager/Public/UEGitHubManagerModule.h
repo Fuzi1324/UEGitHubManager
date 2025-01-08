@@ -12,8 +12,9 @@
 class FUEGitHubManagerModule : public IModuleInterface
 {
 public:
-
 	/** IModuleInterface implementation */
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
 };
+
+#define UEGITHUBMANAGER_API DLLEXPORT
